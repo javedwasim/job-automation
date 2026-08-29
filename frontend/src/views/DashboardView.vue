@@ -24,12 +24,13 @@ function formatDate(value: string | null): string {
 
 async function handleSync() {
   await emails.syncNow()
-  await jobs.fetchJobs()
+  // New jobs land at the top, so jump back to page 1 to show them.
+  await jobs.fetchJobs(1)
 }
 
 async function handleBackfill() {
   await emails.backfillJobs()
-  await jobs.fetchJobs()
+  await jobs.fetchJobs(1)
 }
 </script>
 
@@ -89,7 +90,7 @@ async function handleBackfill() {
 
     <!-- Jobs table -->
     <section class="mt-8">
-      <h2 class="text-lg font-semibold text-slate-900">Jobs ({{ jobs.jobs.length }})</h2>
+      <h2 class="text-lg font-semibold text-slate-900">Jobs ({{ jobs.total }})</h2>
       <p class="mt-1 text-sm text-slate-500">
         Matched against your configured categories, deduplicated by fingerprint.
       </p>
@@ -113,27 +114,66 @@ async function handleBackfill() {
                 No jobs yet — connect Gmail and click "Sync Now".
               </td>
             </tr>
-            <tr v-for="job in jobs.jobs" :key="job.id">
-              <td class="px-4 py-2 text-slate-800">{{ job.title }}</td>
+            <tr
+              v-for="job in jobs.jobs"
+              :key="job.id"
+              :class="{ 'bg-slate-50/70': jobs.isVisited(job.job_url) }"
+            >
+              <td
+                class="px-4 py-2"
+                :class="jobs.isVisited(job.job_url) ? 'text-slate-400' : 'text-slate-800'"
+              >
+                {{ job.title }}
+              </td>
               <td class="px-4 py-2 text-slate-600">{{ job.company ?? '—' }}</td>
               <td class="px-4 py-2 text-slate-600">{{ job.source ?? '—' }}</td>
               <td class="px-4 py-2 text-slate-600">{{ job.categories.join(', ') || '—' }}</td>
               <td class="px-4 py-2 text-slate-500">{{ formatDate(job.job_posted_at) }}</td>
               <td class="px-4 py-2 text-slate-500">{{ formatDate(job.received_at) }}</td>
-              <td class="px-4 py-2">
+              <td class="whitespace-nowrap px-4 py-2">
                 <a
                   v-if="job.job_url"
                   :href="job.job_url"
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="text-blue-600 hover:underline"
+                  class="hover:underline"
+                  :class="jobs.isVisited(job.job_url) ? 'text-slate-400' : 'text-blue-600'"
+                  @click="jobs.markVisited(job.job_url)"
                   >Open</a
                 >
                 <span v-else class="text-slate-300">—</span>
+                <span
+                  v-if="jobs.isVisited(job.job_url)"
+                  class="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-600"
+                  title="You opened this link"
+                  >✓ Visited</span
+                >
               </td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <!-- Pagination -->
+      <div v-if="jobs.totalPages > 1" class="mt-3 flex items-center justify-between">
+        <p class="text-sm text-slate-500">
+          Page {{ jobs.page }} of {{ jobs.totalPages }} · {{ jobs.total }} jobs · newest first
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="jobs.page <= 1 || jobs.loading"
+            @click="jobs.goToPage(jobs.page - 1)"
+          >
+            ← Prev
+          </button>
+          <button
+            class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="jobs.page >= jobs.totalPages || jobs.loading"
+            @click="jobs.goToPage(jobs.page + 1)"
+          >
+            Next →
+          </button>
+        </div>
       </div>
     </section>
 

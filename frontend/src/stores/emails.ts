@@ -59,7 +59,7 @@ export const useEmailsStore = defineStore('emails', {
       this.loading = true
       this.error = null
       try {
-        const { data } = await api.get<JobEmail[]>('/gmail/emails')
+        const { data } = await api.get<JobEmail[]>('/gmail/emails?limit=200')
         this.emails = data
       } catch {
         this.error = 'Could not load emails from the backend.'
