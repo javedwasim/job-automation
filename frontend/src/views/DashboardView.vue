@@ -13,7 +13,6 @@ const connectedAccount = computed(() => emails.accounts[0] ?? null)
 onMounted(() => {
   overview.checkBackend()
   emails.fetchAccounts()
-  emails.fetchEmails()
   jobs.fetchJobs()
 })
 
@@ -174,44 +173,6 @@ async function handleBackfill() {
             Next →
           </button>
         </div>
-      </div>
-    </section>
-
-    <!-- Discovered emails -->
-    <section class="mt-8">
-      <h2 class="text-lg font-semibold text-slate-900">
-        Discovered emails ({{ emails.emails.length }})
-      </h2>
-      <p class="mt-1 text-sm text-slate-500">
-        Every job-alert email found in the last 24 hours, whether or not it produced a job.
-      </p>
-
-      <div class="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table class="min-w-full divide-y divide-slate-200 text-sm">
-          <thead class="bg-slate-50">
-            <tr>
-              <th class="px-4 py-2 text-left font-medium text-slate-600">Subject</th>
-              <th class="px-4 py-2 text-left font-medium text-slate-600">Sender</th>
-              <th class="px-4 py-2 text-left font-medium text-slate-600">Source</th>
-              <th class="px-4 py-2 text-left font-medium text-slate-600">Received</th>
-              <th class="px-4 py-2 text-left font-medium text-slate-600">Status</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-if="emails.emails.length === 0">
-              <td colspan="5" class="px-4 py-6 text-center text-slate-400">
-                No emails discovered yet.
-              </td>
-            </tr>
-            <tr v-for="email in emails.emails" :key="email.id">
-              <td class="px-4 py-2 text-slate-800">{{ email.subject }}</td>
-              <td class="px-4 py-2 text-slate-600">{{ email.sender }}</td>
-              <td class="px-4 py-2 text-slate-600">{{ email.source ?? '—' }}</td>
-              <td class="px-4 py-2 text-slate-500">{{ formatDate(email.received_at) }}</td>
-              <td class="px-4 py-2 text-slate-500">{{ email.status }}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
     </section>
   </div>
