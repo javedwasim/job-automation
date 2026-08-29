@@ -1,0 +1,21 @@
+# Env
+.env
+*.env.local
+
+# Python
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.pytest_cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+
+# Alembic (keep versions, ignore nothing extra for now)
