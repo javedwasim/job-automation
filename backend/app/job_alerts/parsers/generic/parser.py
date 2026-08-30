@@ -2,11 +2,11 @@
 Always supports() == True so it must be registered LAST in the registry.
 
 Uses the same BaseJobAlertParser scaffolding as every platform parser: it
-only contributes the fallback *strategy* (trust the best single job URL,
-guess the title from the subject). All shared behavior — multi-link
-handling, field reading, date extraction, URL canonicalization, defaults —
-comes from the base class and the centralized services.
-"""
+only contributes the fallback *strategy* (guess the title from the subject
+when a block has none). Multi-job segmentation, field reading, date
+extraction, URL canonicalization and defaults all come from the base class
+and the centralized services — a generic digest with N recognized job links
+yields N candidates, never one."""
 
 from dataclasses import replace
 
@@ -22,9 +22,25 @@ class GenericParser(BaseJobAlertParser):
         return True  # fallback — never blocks a future specialized parser from being added
 
     def parse_jobs(self, email: NormalizedEmail) -> list[NormalizedJob]:
-        # The fallback parser only trusts emails containing a link to an
-        # actual job posting — otherwise every broad-query email (newsletter,
-        # social digest, account notice) would become a junk job row.
+        """EVERY recognized job link in the email becomes its own candidate
+        (spec section 3) via the shared per-job block segmentation — the
+        fallback parser never collapses a multi-job email into one job."""
+        jobs: list[NormalizedJob] = []
+        for block, link in self._job_blocks(email):
+            fields = self._fields_from_block(block)
+            title = fields.title or self._guess_title(email.subject, block)
+            if title is None:
+                continue
+            candidate = self._candidate(fields, link, email)
+            jobs.append(replace(candidate, title=title))
+        if jobs:
+            return jobs
+
+        # No link matched the shared job-posting patterns. Keep the classic
+        # conservative single-URL inference ONLY for emails that point at a
+        # direct job posting on an unusual domain (careers site, job board
+        # not in the known patterns) — otherwise every broad-query email
+        # (newsletter, social digest, account notice) would become a junk row.
         best = self._url_extractor.extract(email.links)
         if best is None or not best.direct_job_url:
             return []

@@ -17,6 +17,7 @@ from app.gmail.normalizer import normalize_email
 from app.job_alerts.parsers.glassdoor.parser import GlassdoorParser
 from app.job_alerts.parsers.indeed.parser import IndeedParser
 from app.job_alerts.parsers.linkedin.parser import LinkedInParser
+from app.job_alerts.parsers.wellfound.parser import WellfoundParser
 from tests.fixtures.glassdoor.job_alert_message import (
     make_multi_job_raw_message as make_glassdoor_multi,
 )
@@ -35,6 +36,8 @@ from tests.fixtures.linkedin.job_alert_message import (
 from tests.fixtures.linkedin.job_alert_message import (
     make_raw_message as make_linkedin_single,
 )
+from tests.fixtures.wellfound import make_multi_job_raw_message as make_wellfound_multi
+from tests.fixtures.wellfound import make_single_job_raw_message as make_wellfound_single
 
 RECEIVED_AT = datetime(2026, 8, 28, 10, 15, 0, tzinfo=UTC)
 
@@ -234,3 +237,147 @@ def test_glassdoor_multi_job_digest_extracts_every_job_and_url() -> None:
         RECEIVED_AT - timedelta(weeks=2),
     ]
     assert all(j.received_at == email.received_at for j in jobs)
+
+
+# --- Wellfound ---------------------------------------------------------------
+
+
+def test_wellfound_single_job_email_yields_one_complete_job() -> None:
+    email = normalize_email(make_wellfound_single())
+    jobs = WellfoundParser().parse(email)
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.source == "wellfound"
+    assert job.title == "Senior PHP Developer"
+    assert job.company == "TechCorp"
+    assert job.location == "Lahore, Pakistan"
+    assert job.salary == "$150,000 - $180,000 a year"
+    assert job.employment_type == "full-time"
+    assert job.platform_job_id == "abc123-senior-php-dev"
+    assert job.job_url is not None and "/job-listings/abc123-senior-php-dev" in job.job_url
+    # Wellfound alerts rarely state a posting date — job_posted_at stays NULL.
+    assert job.job_posted_at is None
+    assert job.received_at == email.received_at
+
+
+def test_wellfound_multi_job_digest_extracts_every_job_and_url() -> None:
+    email = normalize_email(make_wellfound_multi())
+    jobs = WellfoundParser().parse(email)
+
+    assert len(jobs) == 3
+    assert [j.platform_job_id for j in jobs] == [
+        "wellfound-111-backend",
+        "wellfound-222-php",
+        "wellfound-333-laravel",
+    ]
+    assert [j.title for j in jobs] == [
+        "Backend Developer",
+        "PHP Developer",
+        "Laravel Engineer",
+    ]
+    assert [j.company for j in jobs] == [
+        "ABC Technologies",
+        "XYZ Solutions",
+        "WebWorks",
+    ]
+    assert [j.location for j in jobs] == [
+        "Remote",
+        "Lahore, Pakistan",
+        "Karachi, Pakistan",
+    ]
+    assert [j.remote_type for j in jobs] == ["remote", None, None]
+    # Every job keeps its OWN url — never the first URL reused.
+    assert [j.job_url for j in jobs] == [
+        "https://wellfound.com/job-listings/wellfound-111-backend",
+        "https://wellfound.com/job-listings/wellfound-222-php",
+        "https://wellfound.com/job-listings/wellfound-333-laravel",
+    ]
+    # Wellfound rarely states a posting date — all stay NULL (never fabricated).
+    assert all(j.job_posted_at is None for j in jobs)
+    assert all(j.received_at == email.received_at for j in jobs)
+
+
+# --- Generic (fallback) ------------------------------------------------------
+
+
+def test_generic_multi_job_digest_extracts_every_job_and_url() -> None:
+    """The fallback GenericParser must ALSO extract every job from a
+    multi-job email — it inherits the shared block segmentation, so an
+    unrecognized sender's digest with N job links yields N candidates
+    (spec section 3: every supported platform, Generic included)."""
+    from app.job_alerts.parsers.generic.parser import GenericParser
+
+    email = normalize_email(_generic_multi_job_raw_message())
+    jobs = GenericParser().parse(email)
+
+    assert len(jobs) == 3
+    assert [j.platform_job_id for j in jobs] == ["20001", "20002", "20003"]
+    assert [j.title for j in jobs] == [
+        "Backend Developer",
+        "PHP Developer",
+        "Laravel Engineer",
+    ]
+    # Every job keeps its OWN url — never the first URL reused.
+    assert [j.job_url for j in jobs] == [
+        "https://www.linkedin.com/jobs/view/20001",
+        "https://www.linkedin.com/jobs/view/20002",
+        "https://www.linkedin.com/jobs/view/20003",
+    ]
+    assert all(j.source == "generic" for j in jobs)
+    assert all(j.received_at == email.received_at for j in jobs)
+
+
+def _generic_multi_job_raw_message() -> dict:
+    """A 3-job digest from an unrecognized sender — routed to GenericParser.
+    The sender is unknown but the links match known job-posting patterns, so
+    the shared extractor treats them as job links."""
+    import base64
+
+    def _b64(text: str) -> str:
+        return base64.urlsafe_b64encode(text.encode("utf-8")).decode("utf-8").rstrip("=")
+
+    plain = (
+        "3 new jobs match your search\n"
+        "Backend Developer at ABC Technologies - Remote\n"
+        "Posted 3 hours ago\n"
+        "PHP Developer at XYZ Solutions - Lahore, Pakistan\n"
+        "Posted 1 day ago\n"
+        "Laravel Engineer at WebWorks - Karachi, Pakistan\n"
+        "Posted 2 weeks ago\n"
+    )
+    html = """<html><body>
+      <p>3 new jobs match your search</p>
+      <a href="https://www.linkedin.com/jobs/view/20001?trk=eml-job_digest">
+        View Job: Backend Developer
+      </a>
+      <p>Backend Developer at ABC Technologies - Remote</p>
+      <p>Posted 3 hours ago</p>
+      <a href="https://www.linkedin.com/jobs/view/20002?trk=eml-job_digest">
+        View Job: PHP Developer
+      </a>
+      <p>PHP Developer at XYZ Solutions - Lahore, Pakistan</p>
+      <p>Posted 1 day ago</p>
+      <a href="https://www.linkedin.com/jobs/view/20003?trk=eml-job_digest">
+        View Job: Laravel Engineer
+      </a>
+      <p>Laravel Engineer at WebWorks - Karachi, Pakistan</p>
+      <p>Posted 2 weeks ago</p>
+      <a href="https://www.linkedin.com/comm/unsubscribe">Unsubscribe</a>
+    </body></html>"""
+    return {
+        "id": "generic-digest-1",
+        "threadId": "generic-digest-1",
+        "internalDate": "1787912100000",  # 2026-08-28 10:15:00 UTC
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {"name": "From", "value": "Careers Roundup <digest@some-unknown-platform.example>"},
+                {"name": "Subject", "value": "3 new jobs match your search"},
+            ],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64(plain)}},
+                {"mimeType": "text/html", "body": {"data": _b64(html)}},
+            ],
+        },
+    }

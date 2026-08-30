@@ -70,7 +70,9 @@ _PROMOTED_RE = re.compile(r"\b(promoted|sponsored)\b", re.IGNORECASE)
 # A line that is ONLY a promoted/sponsored badge — never a title.
 _PROMOTED_BADGE_RE = re.compile(r"(?:promoted|sponsored)", re.IGNORECASE)
 # Quick pre-filter so salary ranges are never mistaken for identity lines.
-_SALARY_LINE_HINT_RE = re.compile(r"(?:[$€£]|USD|EUR|GBP|PKR|Rs\.?|\d{1,3}(?:,\d{3})+)", re.IGNORECASE)
+_SALARY_LINE_HINT_RE = re.compile(
+    r"(?:[$€£]|USD|EUR|GBP|PKR|Rs\.?|\d{1,3}(?:,\d{3})+)", re.IGNORECASE
+)
 _LOCATION_LINE_RE = re.compile(
     r"^([A-Za-z][A-Za-z .'-]*,\s*[A-Za-z][A-Za-z .'-]*"
     r"|(?:remote|hybrid|on-site|onsite)\b.*)$",
@@ -163,7 +165,11 @@ class BaseJobAlertParser:
         """Segments the email into per-job blocks, each associated with at
         most one job link (spec section 10 — fields are never copied across
         jobs). Each block starts at its link's anchor text so the fields read
-        from the block belong to that block's job."""
+        from the block belong to that block's job.
+
+        CRITICAL: this method must NEVER collapse N job links into a single
+        block. Every detected job link gets its own block so the pipeline can
+        return multiple jobs from one email (spec section 3)."""
         links = self._job_links(email)
         if not links:
             return []
@@ -203,7 +209,7 @@ class BaseJobAlertParser:
         # paragraphs paired in body order (common for HTML-only layouts).
         paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
         if len(paragraphs) == len(links):
-            return list(zip(paragraphs, links))
+            return list(zip(paragraphs, links, strict=False))
 
         # HTML digests often render link anchors ("View Job: …", "Apply")
         # that never appear in the plain-text body. If the body contains
@@ -218,8 +224,107 @@ class BaseJobAlertParser:
                 blocks.append((text[match.start() : end], links[i]))
             return blocks
 
-        # Last resort: never mis-associate fields — one conservative block.
-        return [(text, links[0])]
+        # Some links were anchored but not all — create blocks for anchored
+        # links and pair remaining links with their own text segments.
+        if anchors:
+            return self._segments_from_partial_anchors(anchors, links, text)
+
+        # Last resort: no link could be anchored in the text (HTML-only
+        # anchors that never appear in plain text). Divide text evenly among
+        # all links so EVERY link gets its own block — never collapse N jobs
+        # into one (spec section 3).
+        return self._segments_evenly(links, text)
+
+    @staticmethod
+    def _segments_from_partial_anchors(
+        anchors: list[tuple[int, EmailLink]],
+        links: list[EmailLink],
+        text: str,
+    ) -> list[tuple[str, EmailLink | None]]:
+        """When only some links could be anchored, build blocks for anchored
+        links first, then pair each remaining link with its own text segment
+        split from the unanchored regions. Every link gets a block."""
+        anchored_link_ids = {id(link) for _, link in anchors}
+        remaining = [link for link in links if id(link) not in anchored_link_ids]
+
+        blocks: list[tuple[str, EmailLink | None]] = []
+        for i, (pos, link) in enumerate(anchors):
+            end = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
+            blocks.append((text[pos:end], link))
+
+        if not remaining:
+            return blocks
+
+        # Identify text regions NOT covered by anchored blocks.
+        covered = sorted(
+            (anchors[i][0], anchors[i + 1][0] if i + 1 < len(anchors) else len(text))
+            for i in range(len(anchors))
+        )
+        gaps: list[str] = []
+        prev_end = 0
+        for start, end in covered:
+            if start > prev_end:
+                gap = text[prev_end:start].strip()
+                if gap:
+                    gaps.append(gap)
+            prev_end = end
+        if prev_end < len(text):
+            tail = text[prev_end:].strip()
+            if tail:
+                gaps.append(tail)
+
+        # Split gaps until we have at least one segment per remaining link.
+        segments = list(gaps)
+        if not segments:
+            # Every text region is already covered by an anchored block and
+            # some links could not be anchored — give each remaining link an
+            # empty block rather than crashing (max() on an empty list) or
+            # collapsing them into an anchored block (which would mis-associate
+            # fields). Candidates without a title are rejected individually by
+            # the centralized normalizer with an explicit event.
+            segments = ["" for _ in remaining]
+        while len(segments) < len(remaining):
+            longest = max(segments, key=len)
+            idx = segments.index(longest)
+            mid = len(longest) // 2
+            split_at = longest.rfind("\n", 0, mid)
+            if split_at == -1:
+                split_at = mid
+            segments[idx : idx + 1] = [longest[:split_at], longest[split_at:]]
+
+        for i, link in enumerate(remaining):
+            block_text = segments[i] if i < len(segments) else text
+            blocks.append((block_text, link))
+
+        return blocks
+
+    @staticmethod
+    def _segments_evenly(
+        links: list[EmailLink], text: str
+    ) -> list[tuple[str, EmailLink | None]]:
+        """Divides text into N segments (one per link) so EVERY link gets its
+        own block — never collapses multiple jobs into one (spec section 3).
+        Splits on line boundaries to keep job content coherent. When there is
+        no text at all (or fewer lines than links), every link still gets its
+        own block; empty blocks simply produce no fields and their candidate
+        is rejected individually by the centralized normalizer."""
+        n = len(links)
+        lines = text.splitlines() if text else []
+        if not lines:
+            # No plain text: keep one empty block per link so a multi-job
+            # email is never treated as a single job.
+            return [(text, link) for link in links]
+
+        lines_per_block = max(1, len(lines) // n)
+        blocks: list[tuple[str, EmailLink | None]] = []
+
+        for i, link in enumerate(links):
+            start_line = i * lines_per_block
+            end_line = (i + 1) * lines_per_block if i + 1 < n else len(lines)
+            block_text = "\n".join(lines[start_line:end_line]).strip()
+            blocks.append((block_text, link))
+
+        return blocks
 
     def _fields_from_block(self, block: str) -> BlockFields:
         """Reads the shared field vocabulary (title/company/location/remote/
