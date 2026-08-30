@@ -20,14 +20,17 @@ import re
 from dataclasses import dataclass, replace
 from html import unescape
 
+from bs4 import BeautifulSoup
+
 from app.gmail.dto import EmailLink, NormalizedEmail
+from app.gmail.html_text import render_block_text
 from app.job_alerts.dto.normalized_job import NormalizedJob
 from app.job_alerts.extraction.job_posted_date_extractor import JobPostedDateExtractor
 from app.job_alerts.extraction.url_extractor import UrlExtractor
 from app.job_alerts.extraction.url_normalizer import JobUrlNormalizer
 
 _TITLE_AT_COMPANY_RE = re.compile(
-    r"([A-Za-z0-9 /,&()+\-']{3,80}?)\s+at\s+([A-Za-z0-9 .,&()\-']{2,80})"
+    r"([A-Za-z0-9 ./,&()+\-']{3,80}?)\s+at\s+([A-Za-z0-9 .,&()\-']{2,80})"
 )
 _REMOTE_TYPE_RE = re.compile(r"\b(remote|hybrid|on-?site)\b", re.IGNORECASE)
 _EMPLOYMENT_TYPE_RE = re.compile(
@@ -137,7 +140,11 @@ class BaseJobAlertParser:
         are applied uniformly later by _finalize — every platform gets
         identical default handling (spec sections 3, 10)."""
         return NormalizedJob(
-            title=fields.title or "Unknown Title",
+            # NEVER fabricate a title (spec: a URL plus arbitrary surrounding
+            # text is not a job). A block without a reliable title yields no
+            # candidate — parsers skip before reaching here, and the
+            # centralized normalizer rejects any empty title anyway.
+            title=fields.title or "",
             company=fields.company,
             location=fields.location,
             source=self.slug,
@@ -162,19 +169,66 @@ class BaseJobAlertParser:
         return self._url_extractor.extract_job_links(email.links)
 
     def _job_blocks(self, email: NormalizedEmail) -> list[tuple[str, EmailLink | None]]:
-        """Segments the email into per-job blocks, each associated with at
-        most one job link (spec section 10 — fields are never copied across
-        jobs). Each block starts at its link's anchor text so the fields read
-        from the block belong to that block's job.
+        """Segments the email into per-job blocks, each paired with at most
+        one JOB link (spec section 10 — fields are never copied across jobs).
+        Every link has already passed job-link classification (a URL is
+        necessary but never sufficient — nav/footer/"saved jobs"/tracking
+        links never reach here).
 
-        CRITICAL: this method must NEVER collapse N job links into a single
-        block. Every detected job link gets its own block so the pipeline can
-        return multiple jobs from one email (spec section 3)."""
+        Strategies, in priority order:
+          A. Structured HTML job containers (real digest card markup).
+          C. Plain-text "Title at Company" blocks (LinkedIn digest layout).
+          B. Anchor-local context (text between located anchor positions).
+          D. Safe fallback — a link that cannot be associated with job
+             content gets an EMPTY block and the parser drops it (no title
+             -> no candidate -> no garbage job).
+
+        The earlier "divide the text evenly across N links" fallback is
+        deliberately GONE — it manufactured garbage jobs from arbitrary
+        fragments ("ailable.", "still av", ...): 10 links can legitimately
+        produce 4 jobs, and 4 correct jobs are better than 4 correct + 9
+        garbage."""
         links = self._job_links(email)
         if not links:
             return []
-
         text = email.plain_text or ""
+
+        # Strategy A — structured HTML job containers (only when the email
+        # actually has per-job card structure; flat layouts abort this).
+        if email.html:
+            container_blocks = self._blocks_from_html_containers(email, links)
+            if container_blocks:
+                return container_blocks
+
+        # Strategy C — exactly one inline "Title at Company" header per job
+        # link (LinkedIn digest layout): each segment belongs to its
+        # same-position link.
+        title_matches = list(_TITLE_AT_COMPANY_RE.finditer(text))
+        if len(links) > 1 and len(title_matches) == len(links):
+            blocks = []
+            for i, match in enumerate(title_matches):
+                end = title_matches[i + 1].start() if i + 1 < len(title_matches) else len(text)
+                blocks.append((text[match.start() : end], links[i]))
+            return blocks
+
+        # Strategy B — anchor-local context (text between located anchors).
+        anchor_blocks = self._anchor_blocks(text, links)
+        if anchor_blocks:
+            return anchor_blocks
+
+        # Strategy D — safe fallback.
+        if len(links) == 1:
+            # Single-job email: the whole body belongs to that job.
+            return [(text, links[0])]
+        return [("", link) for link in links]
+
+    def _anchor_blocks(
+        self, text: str, links: list[EmailLink]
+    ) -> list[tuple[str, EmailLink]] | None:
+        """Pairs each link with the text from its located anchor up to the
+        next anchor. Unanchored links get an EMPTY block — never an arbitrary
+        slice (arbitrary text splitting is exactly how garbage jobs were
+        minted)."""
         anchors: list[tuple[int, EmailLink]] = []
         used_positions: set[int] = set()
         cursor = 0
@@ -194,137 +248,86 @@ class BaseJobAlertParser:
             cursor = pos + len(probe)
             anchors.append((pos, link))
 
-        if anchors and len(anchors) == len(links):
-            blocks: list[tuple[str, EmailLink | None]] = []
-            for i, (pos, link) in enumerate(anchors):
-                end = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
-                blocks.append((text[pos:end], link))
-            return blocks
+        if not anchors:
+            return None
 
-        if len(links) == 1:
-            # Single-job email: the whole body belongs to that job.
-            return [(text, links[0])]
-
-        # Not every link could be anchored in the text — try blank-line
-        # paragraphs paired in body order (common for HTML-only layouts).
-        paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
-        if len(paragraphs) == len(links):
-            return list(zip(paragraphs, links, strict=False))
-
-        # HTML digests often render link anchors ("View Job: …", "Apply")
-        # that never appear in the plain-text body. If the body contains
-        # exactly one inline "Title at Company" header per link (LinkedIn
-        # digest layout), segment on those title headers instead — each
-        # segment then belongs to its same-position link.
-        title_matches = list(_TITLE_AT_COMPANY_RE.finditer(text))
-        if len(links) > 1 and len(title_matches) == len(links):
-            blocks = []
-            for i, match in enumerate(title_matches):
-                end = title_matches[i + 1].start() if i + 1 < len(title_matches) else len(text)
-                blocks.append((text[match.start() : end], links[i]))
-            return blocks
-
-        # Some links were anchored but not all — create blocks for anchored
-        # links and pair remaining links with their own text segments.
-        if anchors:
-            return self._segments_from_partial_anchors(anchors, links, text)
-
-        # Last resort: no link could be anchored in the text (HTML-only
-        # anchors that never appear in plain text). Divide text evenly among
-        # all links so EVERY link gets its own block — never collapse N jobs
-        # into one (spec section 3).
-        return self._segments_evenly(links, text)
-
-    @staticmethod
-    def _segments_from_partial_anchors(
-        anchors: list[tuple[int, EmailLink]],
-        links: list[EmailLink],
-        text: str,
-    ) -> list[tuple[str, EmailLink | None]]:
-        """When only some links could be anchored, build blocks for anchored
-        links first, then pair each remaining link with its own text segment
-        split from the unanchored regions. Every link gets a block."""
-        anchored_link_ids = {id(link) for _, link in anchors}
-        remaining = [link for link in links if id(link) not in anchored_link_ids]
-
-        blocks: list[tuple[str, EmailLink | None]] = []
+        anchored_ids = {id(link) for _, link in anchors}
+        blocks: list[tuple[str, EmailLink]] = []
         for i, (pos, link) in enumerate(anchors):
             end = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
             blocks.append((text[pos:end], link))
-
-        if not remaining:
-            return blocks
-
-        # Identify text regions NOT covered by anchored blocks.
-        covered = sorted(
-            (anchors[i][0], anchors[i + 1][0] if i + 1 < len(anchors) else len(text))
-            for i in range(len(anchors))
-        )
-        gaps: list[str] = []
-        prev_end = 0
-        for start, end in covered:
-            if start > prev_end:
-                gap = text[prev_end:start].strip()
-                if gap:
-                    gaps.append(gap)
-            prev_end = end
-        if prev_end < len(text):
-            tail = text[prev_end:].strip()
-            if tail:
-                gaps.append(tail)
-
-        # Split gaps until we have at least one segment per remaining link.
-        segments = list(gaps)
-        if not segments:
-            # Every text region is already covered by an anchored block and
-            # some links could not be anchored — give each remaining link an
-            # empty block rather than crashing (max() on an empty list) or
-            # collapsing them into an anchored block (which would mis-associate
-            # fields). Candidates without a title are rejected individually by
-            # the centralized normalizer with an explicit event.
-            segments = ["" for _ in remaining]
-        while len(segments) < len(remaining):
-            longest = max(segments, key=len)
-            idx = segments.index(longest)
-            mid = len(longest) // 2
-            split_at = longest.rfind("\n", 0, mid)
-            if split_at == -1:
-                split_at = mid
-            segments[idx : idx + 1] = [longest[:split_at], longest[split_at:]]
-
-        for i, link in enumerate(remaining):
-            block_text = segments[i] if i < len(segments) else text
-            blocks.append((block_text, link))
-
+        for link in links:
+            if id(link) not in anchored_ids:
+                blocks.append(("", link))
         return blocks
 
-    @staticmethod
-    def _segments_evenly(
-        links: list[EmailLink], text: str
-    ) -> list[tuple[str, EmailLink | None]]:
-        """Divides text into N segments (one per link) so EVERY link gets its
-        own block — never collapses multiple jobs into one (spec section 3).
-        Splits on line boundaries to keep job content coherent. When there is
-        no text at all (or fewer lines than links), every link still gets its
-        own block; empty blocks simply produce no fields and their candidate
-        is rejected individually by the centralized normalizer."""
-        n = len(links)
-        lines = text.splitlines() if text else []
-        if not lines:
-            # No plain text: keep one empty block per link so a multi-job
-            # email is never treated as a single job.
-            return [(text, link) for link in links]
+    # --- Strategy A helpers: HTML per-job containers -----------------------
 
-        lines_per_block = max(1, len(lines) // n)
-        blocks: list[tuple[str, EmailLink | None]] = []
+    # Elements that may wrap a single job card in digest markup.
+    _JOB_CONTAINER_TAGS = ("table", "tr", "td", "li", "div", "p", "section", "article", "ul", "ol")
+    _MAX_CONTAINER_CHARS = 900
 
-        for i, link in enumerate(links):
-            start_line = i * lines_per_block
-            end_line = (i + 1) * lines_per_block if i + 1 < n else len(lines)
-            block_text = "\n".join(lines[start_line:end_line]).strip()
-            blocks.append((block_text, link))
+    def _blocks_from_html_containers(
+        self, email: NormalizedEmail, links: list[EmailLink]
+    ) -> list[tuple[str, EmailLink]] | None:
+        """Pairs every job link with the text of its nearest self-contained
+        job-card element in the HTML. Aborts (returns None) when the email
+        has no real card structure so lower strategies can try."""
+        soup = BeautifulSoup(email.html or "", "html.parser")
+        root = soup.body or soup
+        blocks: list[tuple[str, EmailLink]] = []
+        any_resolved = False
+        for link in links:
+            anchor = self._best_html_anchor(root, link.url)
+            if anchor is None:
+                blocks.append(("", link))
+                continue
+            container = self._nearest_job_container(anchor)
+            if container is None:
+                blocks.append(("", link))
+                continue
+            any_resolved = True
+            blocks.append((render_block_text(container), link))
+        return blocks if any_resolved else None
 
-        return blocks
+    def _best_html_anchor(self, root, url: str):
+        """The <a> element for a job URL with the richest anchor text (the
+        job-title link is preferred over the empty logo link / generic
+        "Apply now" button sharing the same canonical URL)."""
+        target = self._url_normalizer.canonical(url, self.slug)
+        best = None
+        best_len = -1
+        for anchor in root.find_all("a", href=True):
+            href = anchor.get("href")
+            if not isinstance(href, str):
+                continue
+            href = href.strip()
+            if not href.startswith(("http://", "https://")):
+                continue
+            if self._url_normalizer.canonical(href, self.slug) != target:
+                continue
+            text = anchor.get_text(strip=True)
+            if len(text) > best_len:
+                best, best_len = anchor, len(text)
+        return best
+
+    def _nearest_job_container(self, anchor):
+        """Closest ancestor element that looks like a job card: block content
+        with at least two lines and a bounded size. The <body>/<html> roots
+        are never containers (the whole email is not one job)."""
+        node = anchor.parent
+        while node is not None:
+            name = getattr(node, "name", None)
+            if name in (None, "html", "body"):
+                return None
+            if name in self._JOB_CONTAINER_TAGS:
+                text = render_block_text(node)
+                lines = [ln for ln in text.splitlines() if ln.strip()]
+                total = sum(len(ln) for ln in lines)
+                if len(lines) >= 2 and 0 < total <= self._MAX_CONTAINER_CHARS:
+                    return node
+            node = node.parent
+        return None
 
     def _fields_from_block(self, block: str) -> BlockFields:
         """Reads the shared field vocabulary (title/company/location/remote/
@@ -356,6 +359,11 @@ class BaseJobAlertParser:
         # digest is segmented on action anchors — they are not titles.
         while body_lines and _ACTION_PHRASE_RE.match(body_lines[0]):
             body_lines = body_lines[1:]
+        # Lines that are ONLY a promoted/sponsored badge ("Promoted") are a
+        # card flag, never a title/company.
+        body_lines = [
+            line for line in body_lines if not _PROMOTED_BADGE_RE.fullmatch(line)
+        ]
         if not body_lines:
             return None, None, None, None
 
@@ -377,9 +385,22 @@ class BaseJobAlertParser:
                 return title, company, location, remote_type
 
         # Layout B — one field per line ("Title", "Company", "Lahore, ...").
-        title = body_lines[0]
+        # The title is the first *title-like* line — never a promoted badge,
+        # a location, a remote-type word, a salary or a posting date. This
+        # also means a card whose "title" slot is empty produces NO job
+        # instead of minting a pseudo-title from surrounding text.
+        title = None
+        start = 0
+        for i, line in enumerate(body_lines):
+            if self._is_title_like(line):
+                title = line
+                start = i + 1
+                break
+        if title is None:
+            return None, None, None, None
+
         company = location = None
-        for line in body_lines[1:]:
+        for line in body_lines[start:]:
             # Indeed-style "Company - Location" line carries both fields.
             # Checked FIRST: "DataSoft - Remote" must split into
             # company="DataSoft" + location="Remote", not be swallowed whole
@@ -398,6 +419,55 @@ class BaseJobAlertParser:
                 continue
             break
         return title, company, location, self._normalize_remote(location)
+
+    def _is_title_like(self, line: str | None) -> bool:
+        """True when a block line can plausibly be a job title. Rejects the
+        card-level noise that the old blocker picked up as titles: promoted
+        badges, remote/location-only lines, salary lines, posting-date lines
+        and bare fragments (too short / no alphanumerics / ends in lone
+        punctuation suggesting a text split)."""
+        line = (line or "").strip()
+        if not line or len(line) < 3:
+            return False
+        if _ACTION_PHRASE_RE.match(line):
+            return False
+        if not any(ch.isalnum() for ch in line):
+            return False
+        if _PROMOTED_BADGE_RE.fullmatch(line):
+            return False
+        if _REMOTE_TYPE_RE.fullmatch(line):
+            return False
+        if _POSTED_TEXT_RE.fullmatch(line):
+            return False
+        if _LOCATION_LINE_RE.fullmatch(line):
+            return False
+        if _SALARY_CURRENCY_RE.fullmatch(line) or _SALARY_PLAIN_RE.fullmatch(line):
+            return False
+        # Reject fragments that look like they were cut mid-word: a line that
+        # ends with punctuation but no trailing alnum (e.g. "ailable.",
+        # "ners is.", "ved") is almost certainly a text-split artifact.
+        if line[-1] in ".,;:" and not line[-2:].isalnum():
+            return False
+        # A single word of fewer than 6 chars with no space is not a title
+        # (e.g. "job", "ved", "ogy", "Equi").  Legitimate one-word titles
+        # (Engineer, Developer, Backend) are long enough to survive.
+        if " " not in line and len(line) < 6:
+            return False
+        # Reject multi-word fragments where the final word is a 1-2 char
+        # stub — e.g. "still av", "ners is" — classic text-split artifacts
+        # where a word was chopped in the middle.
+        words = line.split()
+        if len(words) >= 2 and len(words[-1]) <= 2:
+            return False
+        # Also reject if the FIRST word is a 1-2 char stub (e.g. "ty Part",
+        # "at Developer") — another classic text-split artifact.
+        if len(words) >= 2 and len(words[0]) <= 2:
+            return False
+        # Reject fragments that end with a consonant-only stub (no vowel),
+        # suggesting a mid-word cut: "ners", "ology", "Tril", "t Par".
+        if not any(c in "aeiouAEIOU" for c in words[-1]) and len(words[-1]) < 4:
+            return False
+        return True
 
     def _split_company_location(self, line: str) -> tuple[str, str] | None:
         """Splits an Indeed-style "Company - Location" line into its two

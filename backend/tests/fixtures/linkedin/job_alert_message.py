@@ -18,30 +18,131 @@ HTML_BODY = """
 
 PLAIN_BODY = "5 new Laravel jobs near you\nSenior Laravel Developer at ABC Technologies - Remote\n"
 
-DIGEST_HTML = """<html><body>
-  <p>3 new jobs match your alert</p>
-  <a href="https://www.linkedin.com/jobs/view/111000001?trk=eml-job_digest">View Job: Backend Developer</a>
-  <p>Backend Developer at ABC Technologies - Remote</p>
-  <p>Promoted</p>
-  <p>Posted 5 hours ago</p>
-  <a href="https://www.linkedin.com/comm/jobs/view/111000002?trackingId=abc123">View Job: PHP Developer</a>
-  <p>PHP Developer at XYZ Solutions - Lahore, Pakistan</p>
-  <p>Posted 1 day ago</p>
-  <a href="https://www.linkedin.com/jobs/view/111000003?trk=eml-job_digest">View Job: Laravel Engineer</a>
-  <p>Laravel Engineer at WebWorks - Karachi, Pakistan</p>
-  <p>Posted 3 days ago</p>
-  <a href="https://www.linkedin.com/comm/unsubscribe">Unsubscribe</a>
+
+# Realistic LinkedIn multi-job digest HTML.  The body intentionally mixes:
+#   * real job cards (3) with title/company/location/posted-date and a
+#     "View Job" anchor each,
+#   * navigation / footer / utility links ("Your other saved jobs",
+#     "View all jobs", "Manage alerts", "Notification settings",
+#     "Email preferences", "Privacy Policy", "Terms of Service",
+#     "Unsubscribe", LinkedIn home, Jobs home),
+#   * tracking / redirect links (LinkedIn's gld.la shortener),
+#   * a logo link,
+#   * partial text fragments that must never become job titles.
+DIGEST_HTML = """<html><head><title>LinkedIn Job Alert</title></head><body>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
+  <a href="https://www.linkedin.com/feed/?trk=eml-job-digest-logo">
+    <img src="https://media.linkedin.com/logo.png" alt="LinkedIn" width="120" height="28">
+  </a>
+</td></tr></table>
+
+<p style="font-size:16px;">5 new jobs match your alert</p>
+<p>New jobs for: Senior Software Engineer</p>
+
+<!-- ===== Job 1 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;">
+<tr><td>
+  <a href="https://www.linkedin.com/jobs/view/111000001?trk=eml-job_digest&lipi=12345&midToken=abc&midSig=def">
+    <img src="https://media.linkedin.com/job1.png" alt="" width="60" height="60">
+  </a>
+</td><td width="12">
+  <a href="https://www.linkedin.com/comm/jobs/view/111000001">Sr. Backend Engineer at CoRecruit (formerly Quil) - San Francisco, CA</a>
+</td></tr>
+<tr><td colspan="2">
+  <span style="color:#b00020;font-weight:bold;">Promoted</span>
+  &middot; Posted 2 hours ago &middot; Remote
+</td></tr>
+<tr><td colspan="2">
+  <a href="https://www.linkedin.com/comm/jobs/view/111000001?trk=jobdetails-apply" style="background:#0a66c2;color:#fff;padding:8px 12px;text-decoration:none;">Apply now</a>
+  <a href="https://www.linkedin.com/comm/jobs/view/111000001?trk=jobdetails-save" style="margin-left:8px;">Save job</a>
+</td></tr>
+</table>
+
+<!-- ===== Job 2 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;">
+<tr><td>
+  <a href="https://www.linkedin.com/jobs/view/111000002">
+    <img src="https://media.linkedin.com/job2.png" alt="" width="60" height="60">
+  </a>
+</td><td width="12">
+  <a href="https://www.linkedin.com/comm/jobs/view/111000002">Lead Full-stack Software Engineer (PHP and React) at Hilton - Remote</a>
+</td></tr>
+<tr><td colspan="2">
+  Posted 1 day ago &middot; Hybrid
+</td></tr>
+</table>
+
+<!-- ===== Job 3 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;">
+<tr><td>
+  <a href="https://www.linkedin.com/jobs/view/111000003">
+    <img src="https://media.linkedin.com/job3.png" alt="" width="60" height="60">
+  </a>
+</td><td width="12">
+  <a href="https://www.linkedin.com/comm/jobs/view/111000003">Senior WordPress Backend Developer at Teal Media - Lahore, Pakistan</a>
+</td></tr>
+<tr><td colspan="2">
+  Posted 3 days ago
+</td></tr>
+</table>
+
+<!-- ===== Navigation / footer links ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;border-top:1px solid #ccc;padding-top:16px;">
+<tr><td>
+  <a href="https://www.linkedin.com/jobs/view/111000001?trk=recommended-jobs">Recommended jobs</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/jobs/saved?trk=eml-saved-jobs">Your other saved jobs</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/jobs/search?trk=eml-view-all-jobs">View all jobs</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/jobs/alerts?trk=eml-manage-alerts">Manage your job alerts</a>
+</td></tr>
+<tr><td style="padding-top:8px;">
+  <a href="https://www.linkedin.com/mynetwork?trk=eml-notifications">Notification settings</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/psettings?trk=eml-email-prefs">Email preferences</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/psettings/member-data?trk=eml-data">Privacy Policy</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/lite/terms?trk=eml-terms">Terms of Service</a>
+  &nbsp;|&nbsp;
+  <a href="https://gld.la/abc123">Recent jobs</a>
+  &nbsp;|&nbsp;
+  <a href="https://www.linkedin.com/comm/unsubscribe?trk=eml-unsubscribe">Unsubscribe</a>
+</td></tr>
+<tr><td style="padding-top:8px;font-size:12px;color:#666;">
+  LinkedIn Corporation, 2029 Stierlin Court, Mountain View, CA 94043
+</td></tr>
+</table>
 </body></html>"""
 
 DIGEST_PLAIN = (
-    "3 new jobs match your alert\n"
-    "Backend Developer at ABC Technologies - Remote\n"
+    "5 new jobs match your alert\n"
+    "New jobs for: Senior Software Engineer\n"
+    "\n"
+    "Sr. Backend Engineer at CoRecruit (formerly Quil) - San Francisco, CA\n"
     "Promoted\n"
-    "Posted 5 hours ago\n"
-    "PHP Developer at XYZ Solutions - Lahore, Pakistan\n"
+    "Posted 2 hours ago\n"
+    "Remote\n"
+    "Apply now\n"
+    "Save job\n"
+    "\n"
+    "Lead Full-stack Software Engineer (PHP and React) at Hilton - Remote\n"
     "Posted 1 day ago\n"
-    "Laravel Engineer at WebWorks - Karachi, Pakistan\n"
+    "Hybrid\n"
+    "\n"
+    "Senior WordPress Backend Developer at Teal Media - Lahore, Pakistan\n"
     "Posted 3 days ago\n"
+    "\n"
+    "Recommended jobs\n"
+    "Your other saved jobs\n"
+    "View all jobs\n"
+    "Manage your job alerts\n"
+    "Notification settings\n"
+    "Email preferences\n"
+    "Privacy Policy\n"
+    "Terms of Service\n"
+    "Unsubscribe\n"
 )
 
 
@@ -74,11 +175,23 @@ def make_raw_message(
 
 def make_multi_job_raw_message(
     message_id: str = "linkedin-digest-1",
-    subject: str = "3 new jobs match your alert",
+    subject: str = "5 new jobs match your alert",
 ) -> dict:
-    """A 3-job LinkedIn digest (spec section 21: LinkedIn multi-job digest).
-    Includes a Promoted badge on the first job and tracking parameters on
-    the second job's URL."""
+    """A 3-job LinkedIn digest with realistic navigation/footer/tracking links.
+
+    Spec section 21: LinkedIn multi-job digest.  Contains:
+      * 3 real job cards (Sr. Backend Engineer, Lead Full-stack Engineer,
+        Senior WordPress Backend Developer),
+      * Promoted badge on the first job,
+      * tracking parameters (lipi, midToken, midSig, trk) on job 1's URLs,
+      * a /comm/ alias URL on jobs 1 and 2,
+      * navigation/footer links that must NOT become jobs:
+        "Your other saved jobs", "View all jobs", "Manage your job alerts",
+        "Notification settings", "Email preferences", "Privacy Policy",
+        "Terms of Service", "Unsubscribe", "Recommended jobs",
+        a gld.la tracking link, and a logo image link,
+      * Apply now / Save job CTA anchors that share job URLs.
+    """
     return {
         "id": message_id,
         "threadId": message_id,

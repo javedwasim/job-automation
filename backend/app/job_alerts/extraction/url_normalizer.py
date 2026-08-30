@@ -38,6 +38,9 @@ _GENERIC_TRACKING_PARAMS = frozenset(
         "ref",
         "refid",
         "referrer",
+        "lipi",
+        "midtoken",
+        "midsig",
     }
 )
 
@@ -110,6 +113,11 @@ class JobUrlNormalizer:
             path = pattern.sub("/", path, count=1)
         # Collapse duplicate slashes produced by alias removal.
         path = re.sub(r"/{2,}", "/", path)
+        # Normalize a single trailing slash: /jobs/view/123/ and
+        # /jobs/view/123 are the SAME job (tracking variants frequently add
+        # or drop it) and must canonicalize identically.
+        if len(path) > 1:
+            path = path.rstrip("/")
 
         return urlunparse(
             parsed._replace(

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from bs4 import BeautifulSoup
 
 from app.gmail.dto import EmailLink, NormalizedEmail
+from app.gmail.html_text import html_to_plain_text
 
 
 def _decode_body_data(data: str) -> str:
@@ -54,25 +55,12 @@ def _extract_bodies(payload: dict) -> tuple[str, str | None]:
     # every downstream consumer — multi-job block segmentation, relative-date
     # extraction — sees the same text regardless of the email's MIME layout.
     # Without this, HTML-only digests parse to ZERO jobs.
+    # The rendering is block-aware (see app/gmail/html_text.py) so inline
+    # <span> fragmentation can never mint garbage "titles".
     if not plain_text and html:
-        plain_text = _html_to_plain_text(html)
+        plain_text = html_to_plain_text(html)
 
     return plain_text, html
-
-
-def _html_to_plain_text(html: str) -> str:
-    """Converts an HTML email body to line-per-block plain text. Non-content
-    elements (script/style/head) are removed first so their code can never be
-    mistaken for job text."""
-    soup = BeautifulSoup(html, "html.parser")
-    for element in soup(["script", "style", "noscript", "head", "title", "svg"]):
-        element.decompose()
-    text = soup.get_text(separator="\n")
-    # Normalize whitespace: one line per block, no blank lines (the parsers'
-    # line-per-field segmentation and blank-line paragraph pairing both rely
-    # on this shape).
-    lines = (line.strip() for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
 
 
 def _extract_links(html: str | None, plain_text: str) -> list[EmailLink]:

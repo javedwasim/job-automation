@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 import { useOverviewStore } from '../stores/overview'
 import { useEmailsStore } from '../stores/emails'
 import { useJobsStore } from '../stores/jobs'
+import { api } from '../services/api'
 
 const overview = useOverviewStore()
 const emails = useEmailsStore()
@@ -10,15 +11,41 @@ const jobs = useJobsStore()
 
 const connectedAccount = computed(() => emails.accounts[0] ?? null)
 
-onMounted(() => {
+onMounted(async () => {
   overview.checkBackend()
-  emails.fetchAccounts()
   jobs.fetchJobs()
+
+  // Check for OAuth errors in the URL
+  const params = new URLSearchParams(window.location.search)
+  const error = params.get('error')
+
+  if (error) {
+    console.error('OAuth error:', error)
+    alert(`Gmail connection failed: ${error}`)
+    // Clear the error from the URL
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+
+  // Fetch accounts after checking for errors
+  await emails.fetchAccounts()
 })
 
 function formatDate(value: string | null): string {
   if (!value) return '—'
   return new Date(value).toLocaleString()
+}
+
+async function handleConnectGmail() {
+  try {
+    const { data } = await api.get<{ authorization_url: string }>(
+      '/gmail/oauth/authorize'
+    )
+    // Redirect to Google's consent screen
+    window.location.href = data.authorization_url
+  } catch (error) {
+    console.error('Failed to start OAuth flow:', error)
+    alert('Failed to connect Gmail. Please try again.')
+  }
 }
 
 async function handleSync() {
@@ -52,10 +79,20 @@ async function handleBackfill() {
 
       <div class="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <p class="text-sm text-slate-500">Gmail account</p>
-        <p v-if="connectedAccount" class="font-medium text-emerald-600">
-          {{ connectedAccount.email }}
-        </p>
-        <p v-else class="font-medium text-amber-600">No account connected</p>
+        <div v-if="connectedAccount" class="flex items-center justify-between">
+          <p class="font-medium text-emerald-600">
+            {{ connectedAccount.email }}
+          </p>
+        </div>
+        <div v-else class="flex items-center justify-between">
+          <p class="font-medium text-amber-600">No account connected</p>
+          <button
+            class="rounded-md bg-blue-600 px-3 py-1 text-sm font-medium text-white hover:bg-blue-700"
+            @click="handleConnectGmail"
+          >
+            Connect Gmail
+          </button>
+        </div>
       </div>
     </div>
 

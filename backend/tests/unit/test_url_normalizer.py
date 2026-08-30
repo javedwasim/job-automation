@@ -11,9 +11,29 @@ from app.job_alerts.extraction.url_normalizer import JobUrlNormalizer
 
 def test_linkedin_tracking_parameters_stripped() -> None:
     normalizer = JobUrlNormalizer()
+    # The trailing-slash and no-trailing-slash forms are the SAME job
+    # (email tracking variants add/drop it), so the canonical form is the
+    # no-trailing-slash one.
     assert (
         normalizer.canonical("https://www.linkedin.com/jobs/view/123456789/?trackingId=abc")
-        == "https://www.linkedin.com/jobs/view/123456789/"
+        == "https://www.linkedin.com/jobs/view/123456789"
+    )
+
+
+def test_linkedin_comm_alias_and_clean_url_normalize_identically() -> None:
+    """/comm/jobs/view/<id> with lipi tracking and /jobs/view/<id>/ must be
+    ONE identity (spec: tracking parameters must not create duplicates)."""
+    normalizer = JobUrlNormalizer()
+    tracked = (
+        "https://www.linkedin.com/comm/jobs/view/4456676018"
+        "?lipi=urn%3Ali%3Apage%3Aemail_job_digest&midToken=AQGx&midSig=abc&trk=x"
+    )
+    clean = "https://www.linkedin.com/jobs/view/4456676018/"
+    assert normalizer.canonical(tracked) == normalizer.canonical(clean) == (
+        "https://www.linkedin.com/jobs/view/4456676018"
+    )
+    assert normalizer.extract_job_id(tracked) == normalizer.extract_job_id(clean) == (
+        "4456676018"
     )
 
 

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     google_client_id: str = Field(default="")
     google_client_secret: str = Field(default="")
     google_redirect_uri: str = Field(default="http://localhost:8000/api/gmail/oauth/callback")
+    frontend_url: str = Field(default="http://localhost:5173")
 
     # --- Classification (spec section 15) ---
     job_classifier: str = Field(default="rules")  # rules | ai | hybrid

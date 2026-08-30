@@ -66,19 +66,19 @@ def test_linkedin_multi_job_digest_extracts_every_job_and_url() -> None:
     assert len(jobs) == 3
     assert [j.platform_job_id for j in jobs] == ["111000001", "111000002", "111000003"]
     assert [j.title for j in jobs] == [
-        "Backend Developer",
-        "PHP Developer",
-        "Laravel Engineer",
+        "Sr. Backend Engineer",
+        "Lead Full-stack Software Engineer (PHP and React)",
+        "Senior WordPress Backend Developer",
     ]
     assert [j.company for j in jobs] == [
-        "ABC Technologies",
-        "XYZ Solutions",
-        "WebWorks",
+        "CoRecruit (formerly Quil)",
+        "Hilton",
+        "Teal Media",
     ]
     assert [j.location for j in jobs] == [
+        "San Francisco, CA",
         "Remote",
         "Lahore, Pakistan",
-        "Karachi, Pakistan",
     ]
     # Every job keeps its OWN url — never the first URL reused.
     assert [j.job_url for j in jobs] == [
@@ -99,16 +99,194 @@ def test_linkedin_digest_promoted_job_flagged_not_rejected() -> None:
     assert jobs[2].is_promoted is False
     # The promoted job's actual posting date was still extracted — freshness
     # will be decided on it, not on the badge.
-    assert jobs[0].job_posted_at == RECEIVED_AT - timedelta(hours=5)
+    assert jobs[0].job_posted_at == RECEIVED_AT - timedelta(hours=2)
+    assert jobs[0].title == "Sr. Backend Engineer"
 
 
 def test_linkedin_digest_dates_relative_to_received_at_not_now() -> None:
     email = normalize_email(make_linkedin_multi())
     jobs = LinkedInParser().parse(email)
 
-    assert jobs[0].job_posted_at == RECEIVED_AT - timedelta(hours=5)
+    assert jobs[0].job_posted_at == RECEIVED_AT - timedelta(hours=2)
     assert jobs[1].job_posted_at == RECEIVED_AT - timedelta(days=1)
     assert jobs[2].job_posted_at == RECEIVED_AT - timedelta(days=3)
+
+
+# --- LinkedIn garbage-link rejection (spec section 3: a URL alone is not a job) ---
+
+
+# Navigation footer phrases that must NEVER become job titles or jobs.
+GARBAGE_TITLES = [
+    "ailable.", "still av", "ners is", "ty Part", "Equi", "ogy",
+    "at Tril", "job", "ved", "Your sa",
+]
+GARBAGE_ANCHOR_TEXTS = [
+    "Your other saved jobs", "View all jobs", "See more jobs", "Manage your job alerts",
+    "Manage alerts", "Notification settings", "Email preferences", "Privacy Policy",
+    "Terms of Service", "Unsubscribe", "Recommended jobs", "Recent jobs",
+]
+
+
+def test_linkedin_digest_rejects_garbage_navigation_links() -> None:
+    """Test 1 — navigation/footer/tracking links must not become jobs."""
+    email = normalize_email(make_linkedin_multi())
+    jobs = LinkedInParser().parse(email)
+    assert len(jobs) == 3  # exactly the 3 real jobs
+
+    # No garbage titles appear.
+    for job in jobs:
+        assert job.title not in GARBAGE_TITLES
+        assert job.title not in GARBAGE_ANCHOR_TEXTS
+
+    # No navigation URLs appear.
+    for job in jobs:
+        url = job.job_url or ""
+        assert "linkedin.com/jobs/saved" not in url
+        assert "linkedin.com/jobs/search" not in url
+        assert "linkedin.com/jobs/alerts" not in url
+        assert "linkedin.com/mynetwork" not in url
+        assert "linkedin.com/psettings" not in url
+        assert "linkedin.com/feed" not in url
+        assert "gld.la" not in url
+        assert "unsubscribe" not in url.lower()
+
+
+def test_linkedin_digest_correct_titles() -> None:
+    """Test 3 — valid jobs have correct titles."""
+    email = normalize_email(make_linkedin_multi())
+    jobs = LinkedInParser().parse(email)
+    titles = [j.title for j in jobs]
+    assert "Sr. Backend Engineer" in titles
+    assert "Lead Full-stack Software Engineer (PHP and React)" in titles
+    assert "Senior WordPress Backend Developer" in titles
+
+
+def test_linkedin_digest_correct_url_association() -> None:
+    """Test 4 — title corresponds to the same job as the URL."""
+    email = normalize_email(make_linkedin_multi())
+    jobs = LinkedInParser().parse(email)
+    for job in jobs:
+        # Each job_id must correspond to the correct title.
+        if job.platform_job_id == "111000001":
+            assert "Sr. Backend Engineer" in (job.title or "")
+        elif job.platform_job_id == "111000002":
+            assert "Lead Full-stack" in (job.title or "")
+        elif job.platform_job_id == "111000003":
+            assert "Senior WordPress" in (job.title or "")
+
+
+def test_linkedin_digest_tracking_param_dedup() -> None:
+    """Test 5 — tracking params must not create duplicates."""
+    email = normalize_email(make_linkedin_multi())
+    jobs = LinkedInParser().parse(email)
+    # Job 1 appears via /comm/ alias with tracking params — must collapse
+    # to one canonical URL + one ID.
+    urls = [j.job_url for j in jobs]
+    # /comm/ variant and tracking params must normalize to the same canonical URL.
+    assert "https://www.linkedin.com/jobs/view/111000001" in urls
+    # No URL should have tracking params.
+    for url in urls:
+        assert "trk=" not in url
+        assert "lipi=" not in url
+        assert "midToken=" not in url
+        assert "midSig=" not in url
+        assert "/comm/" not in url
+    # Exactly one record per job ID.
+    job_ids = [j.platform_job_id for j in jobs]
+    assert len(job_ids) == len(set(job_ids))
+
+
+def test_linkedin_digest_no_duplicates() -> None:
+    """All job URLs are unique after canonicalization."""
+    email = normalize_email(make_linkedin_multi())
+    jobs = LinkedInParser().parse(email)
+    urls = [j.job_url for j in jobs]
+    assert len(urls) == len(set(urls))
+
+
+# --- Indeed garbage-link rejection (spec section 3: a URL alone is not a job) ---
+
+
+def test_title_like_rejects_text_split_fragments() -> None:
+    """Test 2 — fragments produced by arbitrary text splitting are rejected
+    as titles (e.g. "ailable.", "still av", "ners is")."""
+    from app.job_alerts.parsers.base_parser import BaseJobAlertParser
+
+    parser = BaseJobAlertParser.__new__(BaseJobAlertParser)
+    # These are the garbage titles from the dashboard bug report.
+    for garbage in ["ailable.", "still av", "ners is", "ty Part",
+                     "Equi", "ogy", "at Tril", "job", "ved", "Your sa"]:
+        # Short fragments with trailing punctuation are rejected.
+        assert not parser._is_title_like(garbage), f"should reject: {garbage!r}"
+    # Real titles survive.
+    for title in ["Sr. Backend Engineer", "Lead Full-stack Software Engineer",
+                   "Senior WordPress Backend Developer", "Software Engineer"]:
+        assert parser._is_title_like(title), f"should accept: {title!r}"
+
+
+def test_indeed_digest_rejects_garbage_navigation_links() -> None:
+    """Indeed: navigation/footer/tracking links must not become jobs."""
+    email = normalize_email(make_indeed_multi())
+    jobs = IndeedParser().parse(email)
+    assert len(jobs) == 3  # exactly the 3 real jobs (fixture-dependent)
+
+    for job in jobs:
+        assert job.title not in GARBAGE_TITLES
+        url = job.job_url or ""
+        assert "clk.indeed.com/hp" not in url
+        assert "viewall" not in url.lower()
+        assert "unsubscribe" not in url.lower()
+
+
+def test_indeed_digest_correct_titles_and_urls() -> None:
+    """Indeed: correct titles with correct URL association."""
+    email = normalize_email(make_indeed_multi())
+    jobs = IndeedParser().parse(email)
+    assert len(jobs) == 3
+
+    for job in jobs:
+        assert job.title is not None
+        assert len(job.title) >= 3
+        assert job.platform_job_id is not None
+        assert job.job_url is not None
+
+    # URLs are unique.
+    urls = [j.job_url for j in jobs]
+    assert len(urls) == len(set(urls))
+
+
+# --- Glassdoor garbage-link rejection (spec section 3: a URL alone is not a job) ---
+
+
+def test_glassdoor_digest_rejects_garbage_navigation_links() -> None:
+    """Glassdoor: navigation/footer/tracking links must not become jobs."""
+    email = normalize_email(make_glassdoor_multi())
+    jobs = GlassdoorParser().parse(email)
+    assert len(jobs) == 3  # exactly the 3 real jobs (fixture-dependent)
+
+    for job in jobs:
+        assert job.title not in GARBAGE_TITLES
+        url = job.job_url or ""
+        assert "glassdoor.com/reviews" not in url
+        assert "glassdoor.com/salary" not in url
+        assert "glassdoor.com/profile" not in url
+        assert "unsubscribe" not in url.lower()
+
+
+def test_glassdoor_digest_correct_titles_and_urls() -> None:
+    """Glassdoor: correct titles with correct URL association."""
+    email = normalize_email(make_glassdoor_multi())
+    jobs = GlassdoorParser().parse(email)
+    assert len(jobs) == 3
+
+    for job in jobs:
+        assert job.title is not None
+        assert len(job.title) >= 3
+        assert job.platform_job_id is not None
+        assert job.job_url is not None
+
+    urls = [j.job_url for j in jobs]
+    assert len(urls) == len(set(urls))
 
 
 # --- Indeed ------------------------------------------------------------------
@@ -186,11 +364,11 @@ def test_glassdoor_single_job_email_yields_one_complete_job() -> None:
     email = normalize_email(make_glassdoor_single())
     jobs = GlassdoorParser().parse(email)
 
-    assert len(jobs) == 1  # the "Apply Now" partner link is not a second job
+    assert len(jobs) == 1  # the "Easy Apply" partner link is not a second job
     job = jobs[0]
     assert job.source == "glassdoor"
     assert job.title == "Senior PHP Developer"
-    assert job.company == "TechCorp"
+    assert job.company == "TechCorp  4.2 ★"
     assert job.location == "Lahore, Pakistan"
     assert job.salary == "PKR 250,000 - 350,000 a month"
     assert job.employment_type == "full-time"
@@ -207,29 +385,29 @@ def test_glassdoor_multi_job_digest_extracts_every_job_and_url() -> None:
     email = normalize_email(make_glassdoor_multi())
     jobs = GlassdoorParser().parse(email)
 
-    assert len(jobs) == 3  # the Community footer link is not a job
+    assert len(jobs) == 3
     assert [j.platform_job_id for j in jobs] == ["31112001", "31112002", "31112003"]
     assert [j.title for j in jobs] == [
-        "Backend Developer",
-        "PHP Developer",
-        "Laravel Engineer",
+        "Software Engineer",
+        "Full Stack Developer",
+        "Senior Software Engineer",
     ]
     assert [j.company for j in jobs] == [
-        "ABC Technologies",
-        "XYZ Solutions",
-        "WebWorks",
+        "Kraus Hamdani Aerospace  1.7 ★",
+        "Rite Pros (ME)  4.7 ★",
+        "Valiflo",
     ]
     assert [j.location for j in jobs] == [
-        "Remote",
-        "Lahore, Pakistan",
-        "Karachi, Pakistan",
+        "Fernley, NV",
+        "Portland, ME",
+        "Logan, UT",
     ]
-    assert [j.remote_type for j in jobs] == ["remote", None, None]
+    assert [j.remote_type for j in jobs] == [None, None, None]
     # Every job keeps its OWN url/id — tracking params (src/guid) stripped.
     assert [j.job_url for j in jobs] == [
-        "https://www.glassdoor.com/job-listing/backend-developer-abc-D_JO31112001.htm",
-        "https://www.glassdoor.com/job-listing/php-developer-xyz-D_JO31112002.htm",
-        "https://www.glassdoor.com/job-listing/laravel-engineer-webworks-D_JO31112003.htm",
+        "https://www.glassdoor.com/job-listing/software-engineer-kraus-hamdani-D_JO31112001.htm",
+        "https://www.glassdoor.com/job-listing/full-stack-developer-rite-pros-D_JO31112002.htm",
+        "https://www.glassdoor.com/job-listing/senior-software-engineer-valiflo-D_JO31112003.htm",
     ]
     assert [j.job_posted_at for j in jobs] == [
         RECEIVED_AT - timedelta(hours=3),

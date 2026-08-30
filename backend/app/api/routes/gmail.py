@@ -3,7 +3,9 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 from oauthlib.oauth2 import OAuth2Error
 from sqlalchemy.orm import Session
+from starlette.responses import RedirectResponse
 
+from app.config.settings import get_settings
 from app.database.session import get_db
 from app.gmail.oauth import build_authorization_url, exchange_code_for_tokens
 from app.gmail.service import GmailIngestionService
@@ -50,22 +52,34 @@ def gmail_oauth_authorize() -> AuthorizationUrlOut:
     return AuthorizationUrlOut(authorization_url=authorization_url, state=state)
 
 
-@router.get("/oauth/callback", response_model=GmailAccountOut)
-def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)) -> GmailAccountOut:
-    """Google redirects here after the user grants (or denies) consent."""
+@router.get("/oauth/callback")
+def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+    """Google redirects here after the user grants (or denies) consent.
+    After handling the OAuth flow, redirect back to the frontend dashboard.
+    """
+    settings = get_settings()
     code_verifier = _consume_state(state)
     if code_verifier is None:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/?error=invalid_state",
+            status_code=302,
+        )
 
     try:
         tokens = exchange_code_for_tokens(code=code, state=state, code_verifier=code_verifier)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/?error={str(exc)}",
+            status_code=302,
+        )
     except OAuth2Error as exc:
         # InvalidGrantError ("Missing code verifier"), MismatchingStateError,
         # MissingCodeError, ... — Google-side rejections become 400s instead
         # of unhandled 500s.
-        raise HTTPException(status_code=400, detail=f"OAuth token exchange failed: {exc}") from exc
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/?error=OAuth+token+exchange+failed",
+            status_code=302,
+        )
 
     accounts = GmailAccountRepository(db)
     account = accounts.upsert(
@@ -75,7 +89,8 @@ def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)) -
         refresh_token=tokens.refresh_token,
         token_expires_at=tokens.token_expires_at,
     )
-    return GmailAccountOut.model_validate(account)
+    # Redirect back to the frontend dashboard
+    return RedirectResponse(url=settings.frontend_url, status_code=302)
 
 
 @router.get("/accounts", response_model=list[GmailAccountOut])
