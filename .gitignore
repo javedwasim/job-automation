@@ -18,4 +18,8 @@ frontend/dist/
 # OS
 .DS_Store
 
+# Local dev databases
+backend/*.db
+backend/*.sqlite*
+
 # Alembic (keep versions, ignore nothing extra for now)
