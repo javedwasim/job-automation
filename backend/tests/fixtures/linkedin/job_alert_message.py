@@ -211,3 +211,108 @@ def make_multi_job_raw_message(
             ],
         },
     }
+
+
+# Regression fixture: LinkedIn digest where job URLs are embedded DIRECTLY
+# on the job title anchors (no separate logo/image link). The parser MUST:
+# 1. Identify each title anchor as the job link
+# 2. Use its visible text as the title
+# 3. Extract the canonical URL and job ID
+# 4. Not create duplicate jobs from navigation links
+TITLE_ANCHOR_HTML = """<html><head><title>LinkedIn Job Alert</title></head><body>
+<p>3 new jobs for: Software Engineer</p>
+
+<!-- ===== Job 1 ===== -->
+<div style="margin:16px 0; padding:12px; border:1px solid #ddd;">
+  <a href="https://www.linkedin.com/jobs/view/999000001?trk=email-digest&lipi=abc&midToken=def&midSig=ghi">
+    Senior Backend Engineer
+  </a>
+  <p>TechCorp Inc. - San Francisco, CA</p>
+  <p>Posted 2 hours ago</p>
+</div>
+
+<!-- ===== Job 2 ===== -->
+<div style="margin:16px 0; padding:12px; border:1px solid #ddd;">
+  <a href="https://www.linkedin.com/jobs/view/999000002?trk=email-digest">
+    PHP Laravel Developer
+  </a>
+  <p>WebDev Solutions - Remote</p>
+  <p>Posted 1 day ago</p>
+</div>
+
+<!-- ===== Job 3 ===== -->
+<div style="margin:16px 0; padding:12px; border:1px solid #ddd;">
+  <a href="https://www.linkedin.com/jobs/view/999000003">
+    Full Stack Engineer
+  </a>
+  <p>CloudStart Ltd. - New York, NY</p>
+  <p>Posted 3 days ago</p>
+</div>
+
+<!-- ===== Navigation links that must NOT become jobs ===== -->
+<div style="margin-top:24px; padding-top:12px; border-top:1px solid #ccc;">
+  <a href="https://www.linkedin.com/jobs/saved">Your other saved jobs</a> |
+  <a href="https://www.linkedin.com/jobs/search">View all jobs</a> |
+  <a href="https://www.linkedin.com/jobs/alerts">Manage your job alerts</a> |
+  <a href="https://www.linkedin.com/comm/unsubscribe">Unsubscribe</a>
+</div>
+</body></html>"""
+
+TITLE_ANCHOR_PLAIN = (
+    "3 new jobs for: Software Engineer\n"
+    "\n"
+    "Senior Backend Engineer\n"
+    "TechCorp Inc. - San Francisco, CA\n"
+    "Posted 2 hours ago\n"
+    "\n"
+    "PHP Laravel Developer\n"
+    "WebDev Solutions - Remote\n"
+    "Posted 1 day ago\n"
+    "\n"
+    "Full Stack Engineer\n"
+    "CloudStart Ltd. - New York, NY\n"
+    "Posted 3 days ago\n"
+    "\n"
+    "Your other saved jobs\n"
+    "View all jobs\n"
+    "Manage your job alerts\n"
+    "Unsubscribe\n"
+)
+
+
+def make_title_anchor_raw_message(
+    message_id: str = "linkedin-digest-title-anchor",
+    subject: str = "3 new jobs for: Software Engineer",
+) -> dict:
+    """Regression fixture: LinkedIn digest where job URLs are embedded directly
+    on title anchors (no separate logo/image link).
+
+    Spec: "For every LinkedIn job block: 1. Find the job-title <a> element.
+    2. Use its visible text as title. 3. Use its href as job_url."
+
+    Verifies:
+      * 3 jobs extracted (not 1 from first URL)
+      * 3 unique titles (Senior Backend Engineer, PHP Laravel Developer, Full Stack Engineer)
+      * 3 unique canonical URLs (all tracking params stripped)
+      * 3 correct job IDs (999000001, 999000002, 999000003)
+      * Navigation links are NOT converted to jobs (Your other saved jobs, View all jobs, etc.)
+    """
+    return {
+        "id": message_id,
+        "threadId": message_id,
+        "internalDate": "1787912100000",  # 2026-08-28 10:15:00 UTC
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {
+                    "name": "From",
+                    "value": "LinkedIn Job Alerts <jobs-noreply@linkedin.com>",
+                },
+                {"name": "Subject", "value": subject},
+            ],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64(TITLE_ANCHOR_PLAIN)}},
+                {"mimeType": "text/html", "body": {"data": _b64(TITLE_ANCHOR_HTML)}},
+            ],
+        },
+    }

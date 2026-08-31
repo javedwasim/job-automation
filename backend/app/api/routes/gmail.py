@@ -52,34 +52,26 @@ def gmail_oauth_authorize() -> AuthorizationUrlOut:
     return AuthorizationUrlOut(authorization_url=authorization_url, state=state)
 
 
-@router.get("/oauth/callback")
-def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+@router.get("/oauth/callback", response_model=GmailAccountOut)
+def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)) -> GmailAccountOut:
     """Google redirects here after the user grants (or denies) consent.
-    After handling the OAuth flow, redirect back to the frontend dashboard.
+    
+    Returns account info as JSON. The frontend can poll /gmail/accounts after
+    detecting it's been redirected here to fetch the newly connected account.
     """
-    settings = get_settings()
     code_verifier = _consume_state(state)
     if code_verifier is None:
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/?error=invalid_state",
-            status_code=302,
-        )
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
     try:
         tokens = exchange_code_for_tokens(code=code, state=state, code_verifier=code_verifier)
     except ValueError as exc:
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/?error={str(exc)}",
-            status_code=302,
-        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OAuth2Error as exc:
         # InvalidGrantError ("Missing code verifier"), MismatchingStateError,
         # MissingCodeError, ... — Google-side rejections become 400s instead
         # of unhandled 500s.
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/?error=OAuth+token+exchange+failed",
-            status_code=302,
-        )
+        raise HTTPException(status_code=400, detail=f"OAuth token exchange failed: {exc}") from exc
 
     accounts = GmailAccountRepository(db)
     account = accounts.upsert(
@@ -89,8 +81,7 @@ def gmail_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
         refresh_token=tokens.refresh_token,
         token_expires_at=tokens.token_expires_at,
     )
-    # Redirect back to the frontend dashboard
-    return RedirectResponse(url=settings.frontend_url, status_code=302)
+    return GmailAccountOut.model_validate(account)
 
 
 @router.get("/accounts", response_model=list[GmailAccountOut])

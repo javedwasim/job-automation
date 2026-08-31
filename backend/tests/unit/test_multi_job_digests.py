@@ -36,6 +36,9 @@ from tests.fixtures.linkedin.job_alert_message import (
 from tests.fixtures.linkedin.job_alert_message import (
     make_raw_message as make_linkedin_single,
 )
+from tests.fixtures.linkedin.job_alert_message import (
+    make_title_anchor_raw_message as make_linkedin_title_anchor,
+)
 from tests.fixtures.wellfound import make_multi_job_raw_message as make_wellfound_multi
 from tests.fixtures.wellfound import make_single_job_raw_message as make_wellfound_single
 
@@ -110,6 +113,72 @@ def test_linkedin_digest_dates_relative_to_received_at_not_now() -> None:
     assert jobs[0].job_posted_at == RECEIVED_AT - timedelta(hours=2)
     assert jobs[1].job_posted_at == RECEIVED_AT - timedelta(days=1)
     assert jobs[2].job_posted_at == RECEIVED_AT - timedelta(days=3)
+
+
+def test_linkedin_regression_title_anchor_urls_embedded_directly() -> None:
+    """Regression: job URLs embedded directly on title anchors (no separate
+    logo/image link).
+
+    Requirement: For every LinkedIn job block:
+      1. Find the job-title <a> element.
+      2. Use its visible text as title.
+      3. Use its href as job_url.
+      4. Extract job_id and canonicalize URL.
+      5. Keep title and URL associated with the SAME job.
+      6. Return EVERY job, not only the first one.
+
+    Must NOT create jobs from navigation links (Your other saved jobs, View
+    all jobs, Manage your job alerts, Unsubscribe).
+    """
+    email = normalize_email(make_linkedin_title_anchor())
+    jobs = LinkedInParser().parse(email)
+
+    # Verify 3 jobs extracted (not 1 from first URL, not fake jobs from nav links).
+    assert len(jobs) == 3, f"Expected 3 jobs, got {len(jobs)}"
+
+    # Verify 3 unique titles.
+    titles = [j.title for j in jobs]
+    assert titles == [
+        "Senior Backend Engineer",
+        "PHP Laravel Developer",
+        "Full Stack Engineer",
+    ], f"Got titles: {titles}"
+    assert len(set(titles)) == 3, "Job titles must be unique"
+
+    # Verify 3 unique canonical URLs (tracking params stripped, all normalize to /jobs/view/ID).
+    urls = [j.job_url for j in jobs]
+    assert [
+        "https://www.linkedin.com/jobs/view/999000001",
+        "https://www.linkedin.com/jobs/view/999000002",
+        "https://www.linkedin.com/jobs/view/999000003",
+    ] == urls, f"Got URLs: {urls}"
+    assert len(set(urls)) == 3, "Job URLs must be unique"
+
+    # Verify 3 correct job IDs.
+    job_ids = [j.platform_job_id for j in jobs]
+    assert job_ids == ["999000001", "999000002", "999000003"], f"Got job IDs: {job_ids}"
+
+    # Verify companies extracted.
+    companies = [j.company for j in jobs]
+    assert companies == [
+        "TechCorp Inc.",
+        "WebDev Solutions",
+        "CloudStart Ltd.",
+    ], f"Got companies: {companies}"
+
+    # Verify locations extracted.
+    locations = [j.location for j in jobs]
+    assert locations == [
+        "San Francisco, CA",
+        "Remote",
+        "New York, NY",
+    ], f"Got locations: {locations}"
+
+    # Verify no navigation-link garbage becomes jobs.
+    nav_phrases = ["Your other saved jobs", "View all jobs", "Manage your job alerts", "Unsubscribe"]
+    for phrase in nav_phrases:
+        for job in jobs:
+            assert job.title != phrase, f"Navigation phrase '{phrase}' became a job title"
 
 
 # --- LinkedIn garbage-link rejection (spec section 3: a URL alone is not a job) ---

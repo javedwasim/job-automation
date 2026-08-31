@@ -15,7 +15,8 @@ onMounted(async () => {
   overview.checkBackend()
   jobs.fetchJobs()
 
-  // Check for OAuth errors in the URL
+  // Check if we're coming back from Google's OAuth redirect (Google -> backend callback -> browser redirect back here)
+  // The backend returns a 200 response (browser receives HTML), but we can still fetch accounts to check if a new one was added
   const params = new URLSearchParams(window.location.search)
   const error = params.get('error')
 
@@ -26,7 +27,7 @@ onMounted(async () => {
     window.history.replaceState({}, '', window.location.pathname)
   }
 
-  // Fetch accounts after checking for errors
+  // Fetch accounts (will get the newly connected one if OAuth succeeded)
   await emails.fetchAccounts()
 })
 
