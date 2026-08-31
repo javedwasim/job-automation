@@ -22,6 +22,15 @@ from app.job_alerts.extraction.url_normalizer import JobUrlNormalizer
 _WHITESPACE_RE = re.compile(r"\s+")
 _MAX_FIELD_LENGTH = 255
 _MAX_URL_LENGTH = 2048
+# Residual email-template markup that must never reach a dashboard field:
+# MSO conditional fragments ("[if (gte mso 9)|(IE)]>", "<![endif]>"), HTML
+# comment delimiters ("<!--", "-->") and any tag-like "<...>" run (e.g.
+# "<table ...>", "<tr>", "<td>" — including ones unescaped out of &lt;...&gt;
+# entities). Only clean visible text is stored.
+_MSO_CONDITIONAL_RE = re.compile(
+    r"<!--|-->|\[if[^\]]*\]>?|<!\[endif\]?>?", re.IGNORECASE
+)
+_TAG_MARKUP_RE = re.compile(r"<[^>]*>")
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,14 @@ class JobNormalizer:
     ) -> NormalizedJob | None:
         """Returns the canonical NormalizedJob, or None when the candidate
         fails validation (missing title, no identity anchor)."""
+        # The stored title must be CLEAN VISIBLE TEXT — a title that carries
+        # no visible text once template markup is stripped (e.g. pure MSO
+        # conditional fragments) is not a job, never raw markup on a row.
+        # Reliability is judged on the CLEANED text, not the raw one.
+        cleaned_title = self._clean(job.title)
+        if cleaned_title is None or not self._is_reliable_title(cleaned_title):
+            return None
+
         if not self.is_valid(job):
             return None
 
@@ -82,7 +99,7 @@ class JobNormalizer:
             job_posted_at = self._dates.extract(job.posted_date, job.received_at)
 
         return NormalizedJob(
-            title=self._clean(job.title) or job.title,
+            title=cleaned_title,
             company=self._clean(job.company),
             location=self._clean(job.location),
             source=source or job.source,
@@ -149,7 +166,10 @@ class JobNormalizer:
         text = (job.title or "").strip()
         if not text:
             return "missing title"
-        if not self._is_reliable_title(text):
+        cleaned_title = self._clean(job.title)
+        if cleaned_title is None:
+            return "title has no visible text after markup cleanup"
+        if not self._is_reliable_title(cleaned_title):
             return "title is not a reliable job title"
         if not job.job_url and not job.platform_job_id:
             return "no job URL or platform job id"
@@ -163,7 +183,15 @@ class JobNormalizer:
     def _clean(self, value: str | None) -> str | None:
         if value is None:
             return None
-        cleaned = _WHITESPACE_RE.sub(" ", unescape(value)).strip()
+        cleaned = unescape(value)
+        # Strip ALL email-template markup after unescaping (entities such as
+        # &lt;td&gt; become real tags at this point) so no stored field can
+        # ever contain raw HTML / MSO conditional content.
+        cleaned = _MSO_CONDITIONAL_RE.sub(" ", cleaned)
+        cleaned = _TAG_MARKUP_RE.sub(" ", cleaned)
+        cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
         if not cleaned:
+            # Extraction failed for this field — an EMPTY value, never
+            # template/HTML residue (spec section on clean visible text).
             return None
         return cleaned[:_MAX_FIELD_LENGTH]

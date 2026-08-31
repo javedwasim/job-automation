@@ -31,6 +31,9 @@ from tests.fixtures.indeed.job_alert_message import (
     make_single_job_raw_message as make_indeed_single,
 )
 from tests.fixtures.linkedin.job_alert_message import (
+    make_duplicate_links_raw_message as make_linkedin_duplicate_links,
+)
+from tests.fixtures.linkedin.job_alert_message import (
     make_multi_job_raw_message as make_linkedin_multi,
 )
 from tests.fixtures.linkedin.job_alert_message import (
@@ -271,6 +274,90 @@ def test_linkedin_digest_no_duplicates() -> None:
     jobs = LinkedInParser().parse(email)
     urls = [j.job_url for j in jobs]
     assert len(urls) == len(set(urls))
+
+
+def test_linkedin_multi_link_card_yields_one_record_per_job_id() -> None:
+    """One job reached through several links — company_logo image link,
+    jobcard_body title link, job_posting CTA — PLUS the same job repeated
+    as a second card via a country subdomain must produce exactly ONE
+    record per /jobs/view/<job_id>, with the jobcard_body link as the
+    primary (canonicalized) job link."""
+    email = normalize_email(make_linkedin_duplicate_links())
+    jobs = LinkedInParser().parse(email)
+
+    # Exactly one record per job_id — never a second one for 4025123456.
+    job_ids = [j.platform_job_id for j in jobs]
+    assert job_ids == ["4025123456", "4025999888", "4026000111"]
+    assert len(job_ids) == len(set(job_ids))
+
+    duplicated = jobs[0]
+    # The surviving link is the jobcard_body URL, canonicalized:
+    # tracking stripped, /comm/ collapsed, country subdomain normalized,
+    # /apply CTA variant deduplicated away.
+    assert duplicated.job_url == "https://www.linkedin.com/jobs/view/4025123456"
+    assert "trk=" not in (duplicated.job_url or "")
+
+    # Correct field mapping for the duplicated job.
+    assert duplicated.title == "Senior Machine Learning Engineer (Remote)"
+    assert duplicated.company == "TechNova"
+    assert duplicated.location == "Pakistan (Remote)"
+    assert duplicated.remote_type == "remote"
+    assert duplicated.source == "linkedin"
+
+    # Posted is the card's posting date resolved against the email's own
+    # received_at — never empty, never the Received timestamp.
+    assert duplicated.posted_date == "1 day ago"
+    assert duplicated.job_posted_at == RECEIVED_AT - timedelta(days=1)
+    assert duplicated.received_at == RECEIVED_AT
+
+
+def test_linkedin_mso_conditional_html_never_leaks_into_fields() -> None:
+    """Outlook/MSO conditional comment markup ("[if (gte mso 9)|(IE)]",
+    "<table ...>", "<tr>", "<td>", "[endif]") must never reach any stored
+    field — even when the markup sits INSIDE a job-card cell."""
+    forbidden = ("[if", "<table", "<tr>", "<td>", "endif", "<!--", "&lt;")
+    email = normalize_email(make_linkedin_duplicate_links())
+    jobs = LinkedInParser().parse(email)
+
+    assert len(jobs) == 3
+    for job in jobs:
+        for value in (
+            job.title,
+            job.company,
+            job.location,
+            job.salary,
+            job.employment_type,
+            job.description,
+        ):
+            assert value is None or not any(marker in value for marker in forbidden), value
+
+    # The card whose cell contains MSO conditional markup still maps its
+    # fields to the REAL values — the template markup cannot displace them.
+    by_id = {j.platform_job_id: j for j in jobs}
+    job = by_id["4025999888"]
+    assert job.title == "Lead Full-stack Software Engineer (PHP and React)"
+    assert job.company == "Hilton"
+    assert job.location == "Lahore, Punjab, Pakistan (Remote)"
+    assert job.is_promoted is True
+    assert job.job_posted_at == RECEIVED_AT - timedelta(weeks=2)
+
+
+def test_linkedin_company_first_card_maps_title_and_company_correctly() -> None:
+    """A card that renders the company line ABOVE the title line must not
+    mint the company as the Title (nor the title as the Company): the
+    job-title anchor's visible text wins, and company/location are
+    re-derived from the remaining card lines."""
+    email = normalize_email(make_linkedin_duplicate_links())
+    jobs = LinkedInParser().parse(email)
+    by_id = {j.platform_job_id: j for j in jobs}
+
+    job = by_id["4026000111"]
+    assert job.title == "Senior Backend Engineer (Python)"
+    assert job.company == "Valiflo Technologies"
+    assert job.location == "Karachi, Pakistan (Hybrid)"
+    assert job.remote_type == "hybrid"
+    assert job.job_posted_at == RECEIVED_AT - timedelta(days=3)
+    assert job.job_url == "https://www.linkedin.com/jobs/view/4026000111"
 
 
 # --- Indeed garbage-link rejection (spec section 3: a URL alone is not a job) ---

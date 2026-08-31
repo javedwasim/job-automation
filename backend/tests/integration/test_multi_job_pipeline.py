@@ -338,7 +338,11 @@ def test_multi_job_email_shows_multiple_rows_via_api(
         assert len(body["items"]) == 3
         # Each job has its own title, company, and URL.
         titles = {item["title"] for item in body["items"]}
-        assert titles == {"Backend Developer", "PHP Developer", "Laravel Engineer"}
+        assert titles == {
+            "Sr. Backend Engineer",
+            "Lead Full-stack Software Engineer (PHP and React)",
+            "Senior WordPress Backend Developer",
+        }
         urls = {item["job_url"] for item in body["items"]}
         assert urls == {
             "https://www.linkedin.com/jobs/view/111000001",

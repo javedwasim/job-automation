@@ -85,10 +85,15 @@ _LOCATION_LINE_RE = re.compile(
 # "DataSoft - Remote"). The company part is digits/symbol-free, which keeps
 # salary lines ("$150,000 - $180,000 a year", "PKR 350,000 - 450,000") out;
 # _split_company_location additionally requires the location side to actually
-# look like a location.
+# look like a location. Parentheses are allowed in BOTH parts so
+# "TechNova - Pakistan (Remote)" splits correctly.
 _COMPANY_LOCATION_LINE_RE = re.compile(
-    r"^(?P<company>[A-Za-z][A-Za-z0-9 .,&()'/-]*?)\s+[-–—]\s+(?P<loc>[A-Za-z][A-Za-z .,'-]*)$"
+    r"^(?P<company>[A-Za-z][A-Za-z0-9 .,&()'/-]*?)\s+[-–—]\s+(?P<loc>[A-Za-z][A-Za-z .,'()-]*)$"
 )
+# LinkedIn appends the workplace type in parentheses to a location line:
+# "Pakistan (Remote)", "Lahore, Punjab, Pakistan (Remote)". Such a line is a
+# LOCATION (with workplace type) — never a company name.
+_PAREN_REMOTE_RE = re.compile(r"\(\s*(?:remote|hybrid|on-?site)\s*\)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -408,13 +413,28 @@ class BaseJobAlertParser:
             if split := self._split_company_location(line):
                 company, location = split
                 continue
+            # "Pakistan (Remote)" / "Lahore, Punjab, Pakistan (Remote)" is a
+            # location line with an appended workplace type — checked before
+            # the bare-remote branch so it is stored as the LOCATION and can
+            # never land in the Company field.
+            if _PAREN_REMOTE_RE.search(line):
+                location = line
+                continue
             if _REMOTE_TYPE_RE.search(line) and "," not in line:
                 location = line
                 return title, company, location, self._normalize_remote(line)
             if _LOCATION_LINE_RE.match(line):
                 location = line
                 continue
-            if company is None and "," not in line and "$" not in line and "ago" not in line:
+            if (
+                company is None
+                and "," not in line
+                and "$" not in line
+                and "ago" not in line
+                and not _ACTION_PHRASE_RE.match(line)
+            ):
+                # Action labels ("Apply now", "Save job") are card buttons —
+                # never a company name.
                 company = line
                 continue
             break

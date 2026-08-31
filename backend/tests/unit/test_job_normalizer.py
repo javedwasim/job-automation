@@ -51,6 +51,31 @@ def test_candidate_without_url_or_job_id_is_rejected() -> None:
     assert JobNormalizer().normalize(_job(job_url=None, platform_job_id=None)) is None
 
 
+def test_fields_are_stored_without_email_template_markup() -> None:
+    """Residual email-template markup (MSO conditionals, tag fragments —
+    including ones unescaped out of &lt;...&gt; entities) must never reach a
+    stored field; a field that holds nothing but markup becomes empty."""
+    normalized = JobNormalizer().normalize(
+        _job(
+            company="<!--[if (gte mso 9)|(IE)]> <table><tr><td><![endif]--> TechNova",
+            location="Pakistan &lt;td&gt;(Remote)",
+        )
+    )
+
+    assert normalized is not None
+    assert normalized.company == "TechNova"
+    assert normalized.location == "Pakistan (Remote)"
+    for value in (normalized.company, normalized.location):
+        for marker in ("[if", "endif", "<", ">"):
+            assert marker not in value
+
+
+def test_markup_only_title_is_rejected_not_stored_raw() -> None:
+    """A title that carries no visible text once template markup is stripped
+    is not a job — it must be rejected, never stored as raw HTML."""
+    assert JobNormalizer().normalize(_job(title="<!--[if gte mso 9]><tr><![endif]-->")) is None
+
+
 def test_candidate_with_job_id_but_no_url_is_kept() -> None:
     normalized = JobNormalizer().normalize(_job(job_url=None, platform_job_id="123456"))
     assert normalized is not None

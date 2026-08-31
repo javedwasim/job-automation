@@ -47,6 +47,24 @@ def test_linkedin_trk_and_utm_stripped() -> None:
     )
 
 
+def test_linkedin_subdomain_variants_canonicalize_identically() -> None:
+    """www / country-subdomain / bare-host forms of the SAME /jobs/view/<id>
+    posting are ONE identity — otherwise the same job_id produces multiple
+    dashboard records (the duplicate-jobs bug report)."""
+    normalizer = JobUrlNormalizer()
+    expected = "https://www.linkedin.com/jobs/view/4025123456"
+    variants = (
+        "https://www.linkedin.com/jobs/view/4025123456",
+        "https://www.linkedin.com/jobs/view/4025123456/",
+        "https://pk.linkedin.com/jobs/view/4025123456",
+        "https://linkedin.com/jobs/view/4025123456/",
+        "https://www.linkedin.com/comm/jobs/view/4025123456?trk=eml-job_digest-jobcard_body",
+    )
+    for url in variants:
+        assert normalizer.canonical(url) == expected, url
+    assert normalizer.extract_job_id(variants[2]) == "4025123456"
+
+
 def test_linkedin_comm_email_alias_collapses_to_canonical_path() -> None:
     """LinkedIn alert emails link to /comm/jobs/view/<id>; the canonical
     public path is /jobs/view/<id> (spec section 8 example)."""

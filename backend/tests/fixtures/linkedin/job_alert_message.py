@@ -316,3 +316,141 @@ def make_title_anchor_raw_message(
             ],
         },
     }
+
+
+# Realistic LinkedIn digest that reproduces the duplicate/mapping bugs:
+#   * ONE job reached through several links — the company_logo image link,
+#     the jobcard_body title link and the job_posting CTA link (whose
+#     /apply path canonicalizes differently from the title link, so BOTH
+#     must collapse into one record keyed by the /jobs/view/<job_id> id),
+#   * the SAME job repeated as a second card via a country subdomain
+#     (pk.linkedin.com), a trailing slash and originalSubdomain param,
+#   * Outlook/MSO conditional comment markup around the layout AND inside
+#     a job-card cell ("[if (gte mso 9)|(IE)]", <table>/<tr>/<td>, [endif])
+#     that must never leak into any stored field,
+#   * LinkedIn's "Pakistan (Remote)" location wording (never a Company),
+#   * a card that renders the company line ABOVE the title line (which must
+#     not mint the company as the Title), and a "(Hybrid)" location.
+DUPLICATE_LINKS_HTML = """<html><head><title>LinkedIn Job Alert</title></head><body>
+<!--[if (gte mso 9)|(IE)]>
+<table width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td>
+<![endif]-->
+<p>3 new jobs match your alert</p>
+
+<!-- ===== Job 1: three links for the SAME job ===== -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td width="60" valign="top">
+  <a href="https://www.linkedin.com/comm/jobs/view/4025123456?trk=eml-job_digest-company_logo&amp;lipi=abc">
+    <img src="https://media.licdn.com/technova.png" width="48" height="48" alt="TechNova logo">
+  </a>
+</td><td valign="top">
+  <a href="https://www.linkedin.com/comm/jobs/view/4025123456?trk=eml-job_digest-jobcard_body&amp;lipi=abc">Senior Machine Learning Engineer (Remote)</a>
+  <p>TechNova</p>
+  <p>Pakistan (Remote)</p>
+  <p>1 day ago &middot; 25 applicants</p>
+</td></tr>
+<tr><td colspan="2" style="padding-top:8px;">
+  <a href="https://www.linkedin.com/jobs/view/4025123456/apply?trk=eml-job_digest-job_posting" style="background:#0a66c2;color:#fff;padding:8px 12px;">View job</a>
+</td></tr></table>
+
+<!-- ===== Job 1 again: the SAME job repeated via a country-subdomain card ===== -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td width="60" valign="top">
+  <a href="https://www.linkedin.com/jobs/view/4025123456/?trk=eml-job_digest-jobcard_body&amp;originalSubdomain=pk">
+    <img src="https://media.licdn.com/technova.png" width="48" height="48" alt="">
+  </a>
+</td><td valign="top">
+  <a href="https://pk.linkedin.com/jobs/view/4025123456?trk=eml-job_digest-jobcard_body">Senior Machine Learning Engineer (Remote)</a>
+  <p>TechNova</p>
+  <p>Pakistan (Remote)</p>
+  <p>1 day ago</p>
+</td></tr></table>
+
+<!-- ===== Job 2: MSO conditional markup INSIDE the card cell ===== -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td valign="top">
+  <!--[if gte mso 9]><table><tr><td>Hilton</td></tr></table><![endif]-->
+  <a href="https://www.linkedin.com/comm/jobs/view/4025999888?trk=eml-job_digest-jobcard_body">Lead Full-stack Software Engineer (PHP and React)</a>
+  <p>Hilton</p>
+  <p>Lahore, Punjab, Pakistan (Remote)</p>
+  <p>2 weeks ago &middot; Promoted</p>
+</td></tr></table>
+
+<!-- ===== Job 3: company line rendered ABOVE the title line ===== -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td valign="top">
+  <p>Valiflo Technologies</p>
+  <a href="https://www.linkedin.com/jobs/view/4026000111?trk=eml-job_digest-jobcard_body">Senior Backend Engineer (Python)</a>
+  <p>Karachi, Pakistan (Hybrid)</p>
+  <p>3 days ago</p>
+</td></tr></table>
+
+<!--[if (gte mso 9)|(IE)]>
+</td></tr></table>
+<![endif]-->
+<table role="presentation" width="100%"><tr><td style="font-size:12px;">
+  <a href="https://www.linkedin.com/jobs/saved?trk=eml-saved-jobs">Your other saved jobs</a> |
+  <a href="https://www.linkedin.com/comm/unsubscribe?trk=eml-unsubscribe">Unsubscribe</a>
+</td></tr></table>
+</body></html>"""
+
+DUPLICATE_LINKS_PLAIN = (
+    "3 new jobs match your alert\n"
+    "Senior Machine Learning Engineer (Remote)\n"
+    "TechNova\n"
+    "Pakistan (Remote)\n"
+    "1 day ago · 25 applicants\n"
+    "View job\n"
+    "Senior Machine Learning Engineer (Remote)\n"
+    "TechNova\n"
+    "Pakistan (Remote)\n"
+    "1 day ago\n"
+    "Lead Full-stack Software Engineer (PHP and React)\n"
+    "Hilton\n"
+    "Lahore, Punjab, Pakistan (Remote)\n"
+    "2 weeks ago · Promoted\n"
+    "Valiflo Technologies\n"
+    "Senior Backend Engineer (Python)\n"
+    "Karachi, Pakistan (Hybrid)\n"
+    "3 days ago\n"
+    "Your other saved jobs\n"
+    "Unsubscribe\n"
+)
+
+
+def make_duplicate_links_raw_message(
+    message_id: str = "linkedin-digest-duplicate-links",
+    subject: str = "3 new jobs match your alert",
+) -> dict:
+    """Regression fixture for the dashboard bug report:
+
+      * exactly ONE record per job_id no matter how many links (jobcard_body,
+        job_posting, company_logo, /comm/ aliases, country subdomains)
+        point at the same job,
+      * jobcard_body preferred as the primary job link,
+      * Title = actual job title, Company = actual company name, and
+        location text such as "Pakistan (Remote)" never in Company,
+      * Posted = the card's posting date ("1 day ago"), never empty and
+        never the email Received timestamp,
+      * no MSO conditional HTML in any stored field.
+    """
+    return {
+        "id": message_id,
+        "threadId": message_id,
+        "internalDate": "1787912100000",  # 2026-08-28 10:15:00 UTC
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {
+                    "name": "From",
+                    "value": "LinkedIn Job Alerts <jobs-noreply@linkedin.com>",
+                },
+                {"name": "Subject", "value": subject},
+            ],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64(DUPLICATE_LINKS_PLAIN)}},
+                {"mimeType": "text/html", "body": {"data": _b64(DUPLICATE_LINKS_HTML)}},
+            ],
+        },
+    }
+

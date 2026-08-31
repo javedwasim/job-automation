@@ -53,12 +53,16 @@ class PlatformUrlRule:
     # Query parameters that ARE required to identify the job — never stripped.
     required_params: frozenset[str] = field(default=frozenset())
     # Platform-specific parameters known to be tracking noise.
-    tracking_params: frozenset[str] = field(default=frozenset())
+    tracking_params: frozenset[str] = field(default_factory=frozenset)
     # Path segments (regex) that are email-specific aliases of the canonical
     # path — removed during canonicalization (e.g. LinkedIn's /comm/ prefix).
     alias_path_patterns: tuple[re.Pattern[str], ...] = field(default_factory=tuple)
     # Regexes whose first group captures the platform job ID.
     job_id_patterns: tuple[re.Pattern[str], ...] = field(default_factory=tuple)
+    # Host that all subdomain variants of the platform collapse to during
+    # canonicalization (e.g. pk.linkedin.com == www.linkedin.com for the
+    # same /jobs/view/<id> posting). None = leave the host untouched.
+    canonical_host: str | None = None
 
 
 _PLATFORM_RULES: dict[str, PlatformUrlRule] = {
@@ -67,6 +71,11 @@ _PLATFORM_RULES: dict[str, PlatformUrlRule] = {
         tracking_params=frozenset({"originalsubdomain", "position", "pagesize", "currentjobid"}),
         alias_path_patterns=(re.compile(r"/comm/"),),
         job_id_patterns=(re.compile(r"/jobs/view/(\d+)"),),
+        # LinkedIn serves the same job from country/feature subdomains
+        # (pk.linkedin.com, www.linkedin.com, ...). They are the SAME posting,
+        # so every variant collapses to one canonical host — otherwise the
+        # same job_id produces multiple dashboard records.
+        canonical_host="www.linkedin.com",
     ),
     "indeed": PlatformUrlRule(
         domain="indeed.com",
@@ -119,15 +128,28 @@ class JobUrlNormalizer:
         if len(path) > 1:
             path = path.rstrip("/")
 
+        netloc = parsed.netloc.lower()
+        if rule.canonical_host and self._host_matches_domain(parsed, rule.domain):
+            # Subdomain variants of the same platform job posting collapse to
+            # one host so the same job never yields two canonical URLs.
+            netloc = rule.canonical_host
+
         return urlunparse(
             parsed._replace(
                 scheme=parsed.scheme.lower() or "https",
-                netloc=parsed.netloc.lower(),
+                netloc=netloc,
                 path=path,
                 query=urlencode(kept_params),
                 fragment="",
             )
         )
+
+    @staticmethod
+    def _host_matches_domain(parsed, domain: str) -> bool:
+        """True when the URL's hostname IS the platform domain or a subdomain
+        of it (hostname excludes userinfo/port and is already lowercased)."""
+        host = parsed.hostname or ""
+        return host == domain or host.endswith("." + domain)
 
     def extract_job_id(self, url: str | None, platform: str | None = None) -> str | None:
         """Platform job ID from the URL, when the platform encodes one."""

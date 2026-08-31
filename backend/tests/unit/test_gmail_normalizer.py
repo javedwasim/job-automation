@@ -1,7 +1,28 @@
 from datetime import UTC, datetime
 
+from app.gmail.html_text import html_to_plain_text
 from app.gmail.normalizer import normalize_email
 from tests.fixtures.linkedin.job_alert_message import make_raw_message
+
+
+def test_html_to_plain_text_strips_mso_conditional_comments() -> None:
+    """Outlook/MSO conditional markup ("[if (gte mso 9)|(IE)]", <table>,
+    <tr>, <td>, [endif]) is comment content — BeautifulSoup hands it back as
+    a Comment node (a NavigableString subclass), so it must be skipped or it
+    leaks into job fields as raw HTML."""
+    html = (
+        "<html><body>"
+        '<!--[if (gte mso 9)|(IE)]><table width="600"><tr><td>'
+        "Senior PHP Developer</td></tr></table><![endif]-->"
+        "<p>TechCorp</p>"
+        "</body></html>"
+    )
+
+    text = html_to_plain_text(html)
+
+    assert "TechCorp" in text
+    for marker in ("[if", "endif", "<table", "<tr>", "<td>", "Senior PHP Developer"):
+        assert marker not in text
 
 
 def test_normalize_email_extracts_core_fields() -> None:

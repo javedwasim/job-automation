@@ -21,6 +21,7 @@ distinct lines.
 import re
 
 from bs4 import BeautifulSoup, NavigableString
+from bs4.element import Comment, PreformattedString
 
 _BLOCK_TAGS = frozenset(
     {
@@ -68,6 +69,21 @@ _NON_CONTENT_TAGS = frozenset(
 )
 
 
+def _is_invisible_string(node) -> bool:
+    """True for string nodes that must NEVER render as visible text.
+
+    Email HTML is full of Outlook/MSO conditional markup:
+      <!--[if (gte mso 9)|(IE)]> <table ...><tr><td> ... <![endif]-->
+    BeautifulSoup parses that as a Comment node — and Comment IS a
+    NavigableString subclass, so without this guard the raw comment text
+    ("[if (gte mso 9)|(IE)]", "<table ...>", "<tr>", "<td>", "[endif]")
+    leaks into the rendered plain text and can end up stored as a job's
+    title/company/posted-date. Doctype/PI/CDATA variants are all
+    PreformattedString subclasses. Only plain text may render.
+    """
+    return isinstance(node, (Comment, PreformattedString))
+
+
 def render_block_text(root) -> str:
     """Plain text of an HTML element/soup with a newline at every block
     boundary and NO separator inside inline runs (fragments are never minted).
@@ -86,6 +102,10 @@ def render_block_text(root) -> str:
 def _walk(node, chunks: list[str]) -> None:
     for child in getattr(node, "children", []):
         if isinstance(child, NavigableString):
+            if _is_invisible_string(child):
+                # MSO conditional comments and friends never render —
+                # only clean visible text reaches the parsers.
+                continue
             value = str(child)
             if value:
                 chunks.append(value)
@@ -110,5 +130,9 @@ def html_to_plain_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for element in soup(_NON_CONTENT_TAGS):
         element.decompose()
+    # Strip MSO conditional comments etc. soup-wide so nothing downstream
+    # (render_block_text, anchor get_text) can ever see raw comment markup.
+    for invisible in soup.find_all(string=_is_invisible_string):
+        invisible.extract()
     root = soup.body or soup
     return render_block_text(root)
