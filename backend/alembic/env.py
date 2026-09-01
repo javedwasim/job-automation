@@ -19,6 +19,7 @@ from app.jobs.models.job_category_keyword import JobCategoryKeyword  # noqa: E40
 from app.jobs.models.job_email import JobEmail  # noqa: E402,F401
 from app.jobs.models.job_platform import JobPlatform  # noqa: E402,F401
 from app.jobs.models.processing_event import ProcessingEvent  # noqa: E402,F401
+from app.job_scraper.models import ScrapedJob  # noqa: E402,F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

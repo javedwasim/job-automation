@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     redirect_max_hops: int = Field(default=5)
     redirect_timeout_seconds: float = Field(default=5.0)
 
+    # --- LinkedIn scraper (independent job-discovery source) ---
+    # Runs headless by default; set SCRAPER_HEADLESS=false to watch the
+    # browser while debugging.
+    scraper_headless: bool = Field(default=True)
+    # Hard bound on how many job cards a single scrape keeps and persists —
+    # prevents infinite scrolling / unbounded runtime on huge result sets.
+    scraper_max_cards: int = Field(default=25, ge=1, le=200)
+    # Bounded scroll passes to trigger LinkedIn's infinite scroll before
+    # giving up (dynamic content, but never an endless loop).
+    scraper_max_scroll_passes: int = Field(default=10, ge=1, le=50)
+    scraper_navigation_timeout_seconds: float = Field(default=45.0, gt=1)
+
     # --- Freshness (spec section 6) ---
     # Jobs older than this — measured on job_posted_at, never received_at —
     # are dropped by the centralized freshness policy before persistence.

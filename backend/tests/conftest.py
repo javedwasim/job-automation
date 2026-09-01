@@ -14,6 +14,7 @@ from app.jobs.models.job_category_keyword import JobCategoryKeyword  # noqa: F40
 from app.jobs.models.job_email import JobEmail  # noqa: F401
 from app.jobs.models.job_platform import JobPlatform  # noqa: F401
 from app.jobs.models.processing_event import ProcessingEvent  # noqa: F401
+from app.job_scraper.models import ScrapedJob  # noqa: F401
 from app.main import app
 
 

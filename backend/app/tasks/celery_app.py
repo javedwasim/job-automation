@@ -8,7 +8,7 @@ celery_app = Celery(
     "job_automation",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.example_task", "app.tasks.gmail_tasks"],
+    include=["app.tasks.example_task", "app.tasks.gmail_tasks", "app.tasks.scraper_tasks"],
 )
 
 celery_app.conf.update(

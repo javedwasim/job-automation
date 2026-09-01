@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import gmail, health, jobs
+from app.api.routes import gmail, health, jobs, scraper
 from app.config.settings import get_settings
 
 settings = get_settings()
@@ -28,6 +28,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(gmail.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(scraper.router, prefix="/api")
 
 
 @app.get("/")
