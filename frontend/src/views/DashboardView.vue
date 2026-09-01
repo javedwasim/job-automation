@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useOverviewStore } from '../stores/overview'
 import { useEmailsStore } from '../stores/emails'
 import { useJobsStore } from '../stores/jobs'
 import { api } from '../services/api'
 
+const router = useRouter()
 const overview = useOverviewStore()
 const emails = useEmailsStore()
 const jobs = useJobsStore()
@@ -63,7 +65,15 @@ async function handleBackfill() {
 
 <template>
   <div class="min-h-screen bg-slate-50 p-8">
-    <h1 class="text-2xl font-semibold text-slate-900">Job Alert Extraction Dashboard</h1>
+    <div class="mb-6 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold text-slate-900">Job Alert Extraction Dashboard</h1>
+      <button
+        class="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+        @click="router.push('/scraper')"
+      >
+        Job Scraper
+      </button>
+    </div>
 
     <!-- Backend + Gmail connection status -->
     <div class="mt-6 grid gap-4 sm:grid-cols-2">
