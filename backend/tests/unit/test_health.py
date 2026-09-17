@@ -8,3 +8,16 @@ def test_root(client) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert response.json()["status"] == "running"
+
+
+def test_scraper_preflight_allows_127_localhost_origin(client) -> None:
+    response = client.options(
+        "/api/scraper/linkedin/run",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"

@@ -56,6 +56,16 @@ class LinkedInScraperService:
         self._max_cards = settings.scraper_max_cards
 
     def run(self, request: LinkedInScrapeRequest) -> LinkedInScrapeOut:
+        try:
+            return self._run(request)
+        finally:
+            # Release the browser's lazily-opened job-detail session (no-op
+            # for stub browsers used in tests / when no detail was fetched).
+            close = getattr(self._browser, "close", None)
+            if close is not None:
+                close()
+
+    def _run(self, request: LinkedInScrapeRequest) -> LinkedInScrapeOut:
         scraped_at = datetime.now(UTC)
         search_url = build_linkedin_search_url(
             keyword=request.keyword,
@@ -71,7 +81,8 @@ class LinkedInScraperService:
         normalized = [self._normalize(job, scraped_at=scraped_at) for job in parsed]
         deduped = self._deduplicate(normalized)
         relevant = self._filter_by_keyword_relevance(deduped, request.keyword)
-        kept, filtered = self._apply_date_filter(relevant, request.date_posted, scraped_at)
+        location_filtered = self._filter_by_location(relevant, request.location)
+        kept, filtered = self._apply_date_filter(location_filtered, request.date_posted, scraped_at)
         kept = kept[: self._max_cards]  # hard bound against unbounded results
 
         saved = 0
@@ -154,10 +165,10 @@ class LinkedInScraperService:
     def _matches_keyword(cls, keyword: str, text: str) -> bool:
         """Strict-but-flexible relevance check for job titles/descriptions.
 
-        The keyword must map to actual terms in the target text. A generic
-        word like "developer" by itself is never enough to qualify a title
-        when the query is a different technology stack such as "PHP
-        Developer" vs "C# / Angular".
+        The keyword must map to actual technology terms in the target text. A
+        generic role word like "developer" by itself is never enough when the
+        title is a different tech stack such as "C# / Angular" or a mixed full-
+        stack title listing PHP as one of several stacks.
         """
         if not (keyword or "").strip():
             return True
@@ -194,19 +205,75 @@ class LinkedInScraperService:
         }
 
         tech_tokens = [t for t in keyword_tokens if t not in role_tokens]
-
         if not tech_tokens:
             return any(token in text_tokens for token in keyword_tokens)
 
-        if all(token in text_tokens for token in tech_tokens):
+        role_patterns = [
+            f"{tech} {role}" for tech in tech_tokens for role in (
+                "developer",
+                "engineer",
+                "programmer",
+                "backend",
+                "frontend",
+                "fullstack",
+                "architect",
+                "analyst",
+                "consultant",
+                "devops",
+                "specialist",
+                "lead",
+                "manager",
+            )
+        ] + [
+            f"{role} {tech}" for tech in tech_tokens for role in (
+                "developer",
+                "engineer",
+                "programmer",
+                "backend",
+                "frontend",
+                "fullstack",
+                "architect",
+                "analyst",
+                "consultant",
+                "devops",
+                "specialist",
+                "lead",
+                "manager",
+            )
+        ]
+        if any(pattern in normalized_text for pattern in role_patterns):
             return True
+
+        has_full_stack_signal = "full stack" in normalized_text or "fullstack" in normalized_text
+        if has_full_stack_signal:
+            mixed_stack_tokens = {
+                "csharp",
+                "c",
+                "dotnet",
+                "aspnet",
+                "angular",
+                "react",
+                "node",
+                "nodejs",
+                "javascript",
+                "typescript",
+                "python",
+                "java",
+                "ruby",
+                "go",
+                "kotlin",
+                "swift",
+                "php",
+                "laravel",
+            }
+            stack_hits = {token for token in text_tokens if token in mixed_stack_tokens}
+            if len(stack_hits) > 1:
+                return False
 
         if len(tech_tokens) == 1 and tech_tokens[0] in text_tokens:
-            return True
+            return False
 
-        if any(token in text_tokens for token in tech_tokens) and any(
-            token in text_tokens for token in role_tokens
-        ):
+        if len(tech_tokens) > 1 and all(token in text_tokens for token in tech_tokens):
             return True
 
         return False
@@ -234,11 +301,108 @@ class LinkedInScraperService:
                 detail_html = fetcher(job.job_url)
             except LinkedInScraperError:
                 continue
+
             description = self._extract_description_text(detail_html)
-            if self._matches_keyword(keyword, f"{title} {description}"):
-                kept.append(job)
+            combined_text = f"{title} {description}"
+            if not self._matches_keyword(keyword, combined_text):
+                continue
+
+            title_norm = self._normalize_relevance_text(title)
+            title_tokens = title_norm.split()
+            keyword_norm = self._normalize_relevance_text(keyword)
+            keyword_tokens = keyword_norm.split()
+            tech_tokens = [token for token in keyword_tokens if token not in {
+                "developer",
+                "engineer",
+                "programmer",
+                "backend",
+                "frontend",
+                "fullstack",
+                "software",
+                "architect",
+                "analyst",
+                "manager",
+                "lead",
+                "consultant",
+                "devops",
+                "specialist",
+                "senior",
+                "junior",
+                "staff",
+                "principal",
+            }]
+            description_norm = self._normalize_relevance_text(description)
+            description_tokens = description_norm.split()
+            has_title_tech_signal = any(token in title_tokens for token in tech_tokens)
+            description_has_direct_role_match = any(
+                f"{tech} {role}" in description_norm or f"{role} {tech}" in description_norm
+                for tech in tech_tokens
+                for role in (
+                    "developer",
+                    "engineer",
+                    "programmer",
+                    "backend",
+                    "frontend",
+                    "fullstack",
+                    "architect",
+                    "analyst",
+                    "consultant",
+                    "devops",
+                    "specialist",
+                    "lead",
+                    "manager",
+                )
+            )
+            if not has_title_tech_signal and not description_has_direct_role_match and any(
+                token in description_tokens for token in tech_tokens
+            ):
+                continue
+
+            kept.append(job)
 
         return kept
+
+    @staticmethod
+    def _normalize_location_text(value: str | None) -> str:
+        text = (value or "").lower()
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        return " ".join(text.split())
+
+    @classmethod
+    def _matches_location(cls, requested: str, job_location: str | None) -> bool:
+        """Match explicit country/city filters strictly.
+
+        If the user selected a location such as Pakistan, then a job card with no
+        location text cannot be treated as a valid match. A missing location means
+        the scraper has no evidence the result belongs to the requested region, so
+        it must be excluded rather than silently kept.
+        """
+        requested_norm = cls._normalize_location_text(requested)
+        if not requested_norm:
+            return True
+
+        location_text = cls._normalize_location_text(job_location)
+        if not location_text:
+            return False
+
+        requested_tokens = requested_norm.split()
+        location_tokens = location_text.split()
+
+        if any(token in location_tokens for token in requested_tokens):
+            return True
+
+        if len(requested_tokens) == 1:
+            return requested_tokens[0] in location_tokens
+
+        return False
+
+    @classmethod
+    def _filter_by_location(cls, jobs: list[ScrapedJob], location: str) -> list[ScrapedJob]:
+        """Keep jobs whose location matches the requested area, if any."""
+        if not (location or "").strip():
+            return jobs
+
+        return [job for job in jobs if cls._matches_location(location, job.location)]
 
     @staticmethod
     def _extract_description_text(detail_html: str) -> str:

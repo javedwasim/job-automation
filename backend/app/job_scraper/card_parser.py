@@ -65,11 +65,18 @@ _LOCATION_SELECTORS = (
     "div.job-card-container__metadata-sibling",
     "li.job-card-container__metadata-item",
     "span.job-card-container__metadata-item",
+    "li.job-search-card__metadata-item",
+    # Current guest markup: <div class="base-search-card__metadata">
+    #   <span class="job-search-card__location">…</span> — the span variant
+    #   (older pages used <p class="job-search-card__location">).
+    "div.base-search-card__metadata span.job-search-card__location",
+    "span.job-search-card__location",
     "p.job-search-card__location",
-    "div.base-search-card__metadata p.job-search-card__location",
 )
 _POSTED_SELECTORS = (
     "span.job-card-container__listed-time",
+    # Current guest layout: <time class="job-search-card__listdate--new">.
+    "time.job-search-card__listdate--new",
     "time.job-search-card__listdate",
     "p.job-search-card__listdate",
     "time",
@@ -193,9 +200,14 @@ def _extract_posted(card: Tag, reference: datetime) -> tuple[str | None, datetim
             text = datetime_attr
         if not text:
             continue
-        posted_at = _parse_iso(datetime_attr) if datetime_attr else None
-        if posted_at is None:
+        posted_at = None
+        if text and text != datetime_attr:
+            # Prefer the displayed value ("7 hours ago") when it parses — it
+            # is precise, while LinkedIn's datetime attribute is often a bare
+            # day (2026-09-03 → midnight UTC) that would skew a 24h window.
             posted_at = _DATE_EXTRACTOR.extract(text, reference)
+        if posted_at is None and datetime_attr:
+            posted_at = _parse_iso(datetime_attr)
         return text, posted_at
     return None, None
 

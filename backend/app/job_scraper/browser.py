@@ -59,6 +59,10 @@ class LinkedInSearchBrowser:
         self._max_scrolls = (
             settings.scraper_max_scroll_passes if max_scroll_passes is None else max_scroll_passes
         )
+        # Lazy, persistent session used ONLY for job-detail fetches, so a
+        # scrape that visits many non-matching cards opens Chromium once
+        # instead of once per URL. Released via close().
+        self._detail_session: tuple | None = None
 
     def fetch_search_html(self, url: str) -> str:
         """Opens `url` in a headless browser, scrolls a bounded amount, and
@@ -89,24 +93,78 @@ class LinkedInSearchBrowser:
         return html
 
     def fetch_job_details_html(self, url: str) -> str:
-        """Fetches a single LinkedIn job detail page for relevance fallback."""
-        with self._browser_session() as (browser, page):
-            try:
-                response = page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
-            except Exception as exc:  # pragma: no cover - raised by Playwright timeout
-                raise LinkedInUnavailableError(
-                    f"LinkedIn detail page did not respond within {self._timeout_ms / 1000:.0f}s."
-                ) from exc
-            if response is None:
-                raise LinkedInUnavailableError("LinkedIn detail page returned no response.")
-            if response.status >= 400:
-                raise LinkedInUnavailableError(f"LinkedIn detail page returned HTTP {response.status}.")
-            self._dismiss_guest_prompt(page)
-            final_url = page.url
-            html = page.content()
+        """Fetches one job-detail page for the keyword relevance fallback.
+
+        Detail fetches REUSE a single lazily-opened browser session (the
+        relevance fallback can visit many detail pages in one scrape and a
+        fresh Chromium per URL would make a run take minutes); call
+        ``close()`` when the run finishes to release it.
+        """
+        _pw, _browser, page = self._job_details_session()
+        try:
+            response = page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
+        except Exception as exc:  # pragma: no cover - raised by Playwright timeout
+            raise LinkedInUnavailableError(
+                f"LinkedIn detail page did not respond within {self._timeout_ms / 1000:.0f}s."
+            ) from exc
+        if response is None:
+            raise LinkedInUnavailableError("LinkedIn detail page returned no response.")
+        if response.status >= 400:
+            raise LinkedInUnavailableError(f"LinkedIn detail page returned HTTP {response.status}.")
+        self._dismiss_guest_prompt(page)
+        final_url = page.url
+        html = page.content()
 
         self._validate_page(final_url, html)
         return html
+
+    def _job_details_session(self) -> tuple:
+        """Lazily opens (and remembers) ONE Chromium session for detail
+        fetches; later calls in the same scrape reuse the same page."""
+        if self._detail_session is not None:
+            return self._detail_session
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:  # pragma: no cover - depends on install
+            raise BrowserLaunchError(
+                "Playwright is not installed. Run 'pip install playwright && "
+                "playwright install chromium' on the backend."
+            ) from exc
+
+        pw = sync_playwright().start()
+        try:
+            browser = pw.chromium.launch(
+                headless=self._headless,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+        except Exception as exc:  # pragma: no cover - unexpected browser error
+            pw.stop()
+            raise LinkedInScraperError(
+                f"Unexpected LinkedIn detail browser failure: {exc}"
+            ) from exc
+        self._detail_session = (pw, browser, page)
+        return self._detail_session
+
+    def close(self) -> None:
+        """Closes the persistent job-detail session, if one was opened. Safe
+        to call before/after each scrape or when no detail was ever fetched."""
+        if self._detail_session is None:
+            return
+        pw, browser, page = self._detail_session
+        self._detail_session = None
+        try:
+            page.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
 
     @contextmanager
     def _browser_session(self):
@@ -129,6 +187,8 @@ class LinkedInSearchBrowser:
                 )
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
                 yield browser, page
+        except LinkedInScraperError:
+            raise
         except Exception as exc:  # pragma: no cover - unexpected browser error
             logger.exception("Unexpected LinkedIn scraper failure")
             raise LinkedInScraperError(f"Unexpected LinkedIn scraper failure: {exc}") from exc

@@ -7,9 +7,11 @@ dedup / posted-age rules and DB persistence are deterministic.
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.job_scraper.browser import LinkedInSearchBrowser, LinkedInUnavailableError
 from app.job_scraper.models import ScrapedJob
 from app.job_scraper.schemas import LinkedInScrapeRequest
 from app.job_scraper.service import LinkedInScraperService
@@ -142,6 +144,39 @@ def test_any_time_keeps_everything(db_session: Session) -> None:
     assert {j.job_id for j in result.jobs} == {"3001", "3002"}
 
 
+def test_location_filter_excludes_jobs_outside_requested_country(db_session: Session) -> None:
+    lahore_job = _card("3301", title="Senior Laravel Developer", posted="2 hours ago")
+    lahore_job = lahore_job.replace(
+        '<div class="job-card-container__metadata"><div class="job-card-container__metadata-sibling">Remote</div></div>',
+        '<div class="job-card-container__metadata"><div class="job-card-container__metadata-sibling">Lahore, Pakistan (Remote)</div></div>',
+    )
+    dubai_job = _card("3302", title="Senior Laravel Developer", posted="30 minutes ago")
+    dubai_job = dubai_job.replace(
+        '<div class="job-card-container__metadata"><div class="job-card-container__metadata-sibling">Remote</div></div>',
+        '<div class="job-card-container__metadata"><div class="job-card-container__metadata-sibling">Dubai, United Arab Emirates</div></div>',
+    )
+    service, _ = _build_service(db_session, lahore_job + dubai_job)
+
+    result = service.run(LinkedInScrapeRequest(keyword="Laravel Developer", location="Pakistan", date_posted="any"))
+
+    assert {j.job_id for j in result.jobs} == {"3301"}
+    assert result.saved == 1
+
+
+def test_location_filter_excludes_jobs_with_missing_location_when_country_is_explicit(db_session: Session) -> None:
+    html = _card("3303", title="Full Stack Engineer (Laravel)", posted="12 hours ago")
+    html = html.replace(
+        '<div class="job-card-container__metadata"><div class="job-card-container__metadata-sibling">Remote</div></div>',
+        '',
+    )
+    service, _ = _build_service(db_session, html)
+
+    result = service.run(LinkedInScrapeRequest(keyword="Laravel Developer", location="Pakistan", date_posted="any"))
+
+    assert result.saved == 0
+    assert result.jobs == []
+
+
 def test_unparseable_posted_value_is_not_false_excluded(db_session: Session) -> None:
     html = _card("4001", posted="Some unusual date string")
     service, _ = _build_service(db_session, html)
@@ -269,14 +304,110 @@ def test_keyword_has_no_php_token_does_not_match_full_stack_csharp_title(db_sess
     assert result.jobs == []
 
 
+def test_laravel_keyword_requires_laravel_related_technology(db_session: Session) -> None:
+    csharp_html = _card("9105", title="Senior Full Stack Developer – C# / Angular (Remote, Full-Time) [HR209] (PK)", posted="21 minutes ago")
+    laravel_html = _card("9106", title="Senior Full-Stack Developer (Laravel + React/Next.js)", posted="21 minutes ago")
+
+    csharp_service, _ = _build_service(db_session, csharp_html)
+    csharp_result = csharp_service.run(LinkedInScrapeRequest(keyword="Laravel Developer", date_posted="any"))
+    assert csharp_result.saved == 0
+    assert csharp_result.jobs == []
+
+    laravel_service, _ = _build_service(db_session, laravel_html)
+    laravel_result = laravel_service.run(LinkedInScrapeRequest(keyword="Laravel Developer", date_posted="any"))
+    assert laravel_result.saved == 1
+    assert laravel_result.jobs[0].title == "Senior Full-Stack Developer (Laravel + React/Next.js)"
+
+
+def test_php_keyword_rejects_mixed_full_stack_title_list(db_session: Session) -> None:
+    html = _card("9108", title="Senior Full Stack Developer (C#, Python, and PHP) - Pakistan", posted="21 minutes ago")
+    service, _ = _build_service(db_session, html)
+
+    result = service.run(LinkedInScrapeRequest(keyword="PHP Developer", date_posted="any"))
+
+    assert result.saved == 0
+    assert result.jobs == []
+
+
+def test_generic_engineer_title_does_not_survive_laravel_description_fallback(db_session: Session) -> None:
+    class DetailAwareBrowser(StubBrowser):
+        def __init__(self, html: str, detail_text: str) -> None:
+            super().__init__(html)
+            self.detail_text = detail_text
+            self.detail_requests = 0
+
+        def fetch_job_details_html(self, url: str) -> str:
+            self.detail_requests += 1
+            return self.detail_text
+
+    html = _card("9109", title="Senior Software Engineer", posted="2 hours ago")
+    detail_html = "<html><body><p>We build a platform with Laravel and PHP for internal tooling and APIs.</p></body></html>"
+    browser = DetailAwareBrowser(html, detail_html)
+    service = LinkedInScraperService(db_session, browser=browser)
+
+    result = service.run(LinkedInScrapeRequest(keyword="Laravel Developer", date_posted="any"))
+
+    assert result.saved == 0
+    assert result.jobs == []
+    assert browser.detail_requests == 1
+
+
 def test_full_stack_keyword_still_matches_full_stack_title(db_session: Session) -> None:
-    html = _card("9105", title="Senior Full Stack Developer (Remote)", posted="21 minutes ago")
+    html = _card("9107", title="Senior Full Stack Developer (Remote)", posted="21 minutes ago")
     service, _ = _build_service(db_session, html)
 
     result = service.run(LinkedInScrapeRequest(keyword="Full Stack Developer", date_posted="any"))
 
     assert result.saved == 1
     assert result.jobs[0].title == "Senior Full Stack Developer (Remote)"
+
+
+def test_close_releases_persistent_detail_session() -> None:
+    """close() frees the lazily-opened job-detail session (page, browser,
+    playwright) so repeated scrapes never leak Chromium processes."""
+    from unittest.mock import Mock
+
+    browser = LinkedInSearchBrowser(headless=True, timeout_seconds=1, max_scroll_passes=0)
+    page = Mock()
+    chrome = Mock()
+    pw = Mock()
+    browser._detail_session = (pw, chrome, page)
+
+    browser.close()
+
+    assert browser._detail_session is None
+    page.close.assert_called_once()
+    chrome.close.assert_called_once()
+    pw.stop.assert_called_once()
+
+
+def test_close_is_safe_when_no_session_was_opened() -> None:
+    browser = LinkedInSearchBrowser(headless=True, timeout_seconds=1, max_scroll_passes=0)
+
+    assert browser._detail_session is None
+    browser.close()  # must not raise
+
+
+def test_service_does_not_require_close_on_stub_browser(db_session: Session) -> None:
+    """The service calls close() defensively; browser stubs without that
+    method (as used across the test suite) must keep working unchanged."""
+    html = _card("7701")
+    service, browser = _build_service(db_session, html)
+    assert not hasattr(browser, "close")
+
+    result = service.run(LinkedInScrapeRequest(keyword="ML"))
+    assert result.saved == 1
+
+
+# --- browser error propagation -------------------------------------------------
+
+
+def test_browser_session_preserves_linkedin_scraper_errors() -> None:
+    browser = LinkedInSearchBrowser(headless=True, timeout_seconds=1, max_scroll_passes=0)
+
+    with pytest.raises(LinkedInUnavailableError, match="did not respond"):
+        with browser._browser_session():
+            raise LinkedInUnavailableError("LinkedIn did not respond within 1s.")
 
 
 # --- datetime consistency (spec: timezone-aware UTC internally) ----------------

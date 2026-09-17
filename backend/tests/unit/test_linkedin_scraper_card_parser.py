@@ -172,6 +172,82 @@ def test_base_search_card_layout_is_supported() -> None:
     assert jobs[0].job_id == "4027777111"
 
 
+def test_base_search_card_metadata_item_location_is_supported() -> None:
+    html = """
+    <div class="base-card base-search-card">
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/4027777222/">
+        <span class="sr-only">PHP Developer - ABC Tech - Pakistan</span>
+      </a>
+      <div class="base-search-card__info">
+        <h3 class="base-search-card__title">PHP Developer</h3>
+        <h4 class="base-search-card__subtitle">ABC Tech</h4>
+        <ul class="job-search-card__metadata-wrapper">
+          <li class="job-search-card__metadata-item">Pakistan</li>
+          <li class="job-search-card__metadata-item">1 day ago</li>
+        </ul>
+      </div>
+    </div>"""
+
+    jobs = parse_jobs_html(html)
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "PHP Developer"
+    assert jobs[0].location == "Pakistan"
+
+
+def test_current_span_location_and_listdate_new_layout_is_supported() -> None:
+    """Regression test for the CURRENT LinkedIn guest-search markup (fetched
+    from the live site): location lives in a <span class="job-search-card__location">
+    and the posted age in <time class="job-search-card__listdate--new">.
+    The old parser only handled the <p> variant, so a location filter such as
+    Pakistan excluded every card and the scraper returned no result."""
+    html = """
+    <div class="base-card base-search-card">
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/4027777999/">
+        <span class="sr-only">PHP Developer - Quik Hire Staffing - Pakistan</span>
+      </a>
+      <div class="base-search-card__info">
+        <h3 class="base-search-card__title">PHP Developer - BackEnd (Remote)</h3>
+        <h4 class="base-search-card__subtitle">Quik Hire Staffing</h4>
+        <div class="base-search-card__metadata">
+          <span class="job-search-card__location">Pakistan</span>
+          <time class="job-search-card__listdate--new" datetime="2026-09-03">7 hours ago</time>
+        </div>
+      </div>
+    </div>"""
+
+    jobs = parse_jobs_html(html, scraped_at=SCRAPED_AT)
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "PHP Developer - BackEnd (Remote)"
+    assert jobs[0].company == "Quik Hire Staffing"
+    assert jobs[0].location == "Pakistan"
+    # The precise relative value wins over the bare-day datetime attribute, so
+    # a 24h date filter does not skew a posted-at-midnight to look 24h+ old.
+    assert jobs[0].posted_text == "7 hours ago"
+    assert jobs[0].posted_at == SCRAPED_AT - timedelta(hours=7)
+
+
+def test_bare_day_datetime_attribute_is_fallback_only() -> None:
+    """A <time datetime='2026-09-03'> with no parseable text still yields a
+    UTC-midnight posted_at (defensive fallback), never a crash."""
+    html = """
+    <div class="base-card base-search-card">
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/4027777000/">
+        <span class="sr-only">Laravel Developer - ABC Tech - Pakistan</span>
+      </a>
+      <div class="base-search-card__info">
+        <h3 class="base-search-card__title">Laravel Developer</h3>
+        <h4 class="base-search-card__subtitle">ABC Tech</h4>
+        <time class="job-search-card__listdate--new" datetime="2026-09-03"></time>
+      </div>
+    </div>"""
+
+    job = parse_jobs_html(html, scraped_at=SCRAPED_AT)[0]
+    assert job.posted_text == "2026-09-03"
+    assert job.posted_at == datetime(2026, 9, 3, tzinfo=UTC)
+
+
 # --- robustness -----------------------------------------------------------------
 
 
