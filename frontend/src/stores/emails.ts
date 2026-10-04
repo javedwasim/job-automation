@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api } from '../services/api'
+import { api, extractApiError } from '../services/api'
 
 export interface JobEmail {
   id: number
@@ -61,8 +61,8 @@ export const useEmailsStore = defineStore('emails', {
       try {
         const { data } = await api.get<JobEmail[]>('/gmail/emails?limit=200')
         this.emails = data
-      } catch {
-        this.error = 'Could not load emails from the backend.'
+      } catch (error) {
+        this.error = extractApiError(error, 'Could not load emails from the backend.')
       } finally {
         this.loading = false
       }
@@ -74,8 +74,12 @@ export const useEmailsStore = defineStore('emails', {
         const { data } = await api.post<SyncResult[]>('/gmail/sync')
         this.lastSyncResults = data
         await this.fetchEmails()
-      } catch {
-        this.error = 'Sync failed. Is a Gmail account connected?'
+      } catch (error) {
+        // Surface the real cause instead of guessing: the backend `detail`,
+        // the HTTP status, or a connectivity hint when the request never
+        // reached the API. (A missing Gmail account returns 200 with an
+        // empty result, so it is not the cause of a failed sync.)
+        this.error = extractApiError(error, 'Sync failed.')
       } finally {
         this.syncing = false
       }
@@ -85,8 +89,8 @@ export const useEmailsStore = defineStore('emails', {
       this.error = null
       try {
         await api.post('/gmail/backfill')
-      } catch {
-        this.error = 'Backfill failed.'
+      } catch (error) {
+        this.error = extractApiError(error, 'Backfill failed.')
       } finally {
         this.backfilling = false
       }
